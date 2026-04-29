@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "ss02";
+}
+
+/* Reader text area */
+.reader-text {
+  font-size: 1.15rem;
+  line-height: 1.7;
+  letter-spacing: 0.005em;
+}
+
+/* Active word highlight */
+.word {
+  border-radius: 4px;
+  transition: background-color 90ms linear, color 90ms linear;
+  cursor: pointer;
+}
+
+.word.active {
+  background-color: rgba(99, 102, 241, 0.22);
+  color: inherit;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.word.unstable.active {
+  background-color: rgba(245, 158, 11, 0.22);
+}
+
+.paragraph {
+  margin-bottom: 1.1rem;
+}
+
+/* Progress scrubber thumb */
+input[type="range"].scrubber {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(127, 127, 127, 0.3);
+  border-radius: 999px;
+  outline: none;
+}
+input[type="range"].scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 999px;
+  background: rgb(99, 102, 241);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+/* Hide scrollbars on small mobile while keeping function */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* Safe-area padding for iPhone */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-top    { padding-top: env(safe-area-inset-top); }
