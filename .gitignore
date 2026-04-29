@@ -1,35 +1,10 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.python-version
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-
-# Node / frontend
+# Node / Next
 node_modules/
+.next/
+out/
+build/
 dist/
-dist-ssr/
-.vite/
-.turbo/
-*.local
-
-# Storage (binary book data)
-backend/storage/audio/
-backend/storage/uploads/
-backend/storage/covers/
-backend/storage/*.db
-backend/storage/*.db-journal
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
+*.tsbuildinfo
 
 # Env
 .env
@@ -37,4 +12,19 @@ Thumbs.db
 !.env.example
 
 # Logs
-*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Vercel
+.vercel/
+
+# Copied at postinstall by scripts/copy-pdf-worker.mjs
+public/pdf.worker.min.mjs

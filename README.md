@@ -1,108 +1,95 @@
 # PDF Audiobook Reader
 
-Turn any PDF into a Spotify-style audiobook with synchronized text, click-to-seek,
-persistent progress, and offline support on iPhone (PWA).
+Fully client-side PWA: uploads a PDF, generates a Spotify-style audiobook with
+synchronized text using browser-native TTS (Kokoro-82M via `kokoro-js`),
+deployable to Vercel free tier and installable on iPhone via Add to Home Screen.
 
-```
-PDF ──► PyMuPDF ──► chunker ──► Kokoro TTS ──► WhisperX align ──► {audio, words[], offsets}
-                                                                          │
-                                                                          ▼
-                                                          React PWA reader (synced)
-```
+**No backend. No paid APIs. No server-side TTS.**
 
 ## Stack
 
-| Layer        | Choice                                        |
-| ------------ | --------------------------------------------- |
-| TTS          | Kokoro-82M (`kokoro` pip package)             |
-| Alignment    | WhisperX (aeneas as fallback)                 |
-| PDF          | PyMuPDF (fitz)                                |
-| Backend      | FastAPI + uvicorn                             |
-| Job queue    | Arq (Redis)                                   |
-| Storage      | SQLite metadata + filesystem audio            |
-| Frontend     | Vite + React 18 + TypeScript + TanStack Router|
-| Local DB     | Dexie.js (IndexedDB)                          |
-| Audio        | HTMLAudioElement (chunked MP3, sequential)    |
-| PWA          | vite-plugin-pwa, Workbox runtime cache        |
+| Layer        | Choice                                                         |
+| ------------ | -------------------------------------------------------------- |
+| Framework    | Next.js 14 App Router + TypeScript                             |
+| Styling      | Tailwind CSS                                                   |
+| PDF parsing  | `pdfjs-dist` (worker hosted from `public/`)                    |
+| TTS          | `kokoro-js` (browser ONNX, WebGPU → WASM fallback) — Step 3    |
+| Storage      | IndexedDB via `idb` — Step 4                                   |
+| Audio        | `HTMLAudioElement` + Media Session API — Step 7                |
+| PWA          | manifest + service worker — Step 9                             |
+
+## Build phases (gated on user verification)
+
+The full build is split into 9 incremental steps. Each step ends with a
+verifiable demo and gets its own commit. Don't proceed past a step until
+it works.
+
+1. **Skeleton + PDF upload + text extraction** — *current step*. Drop a PDF,
+   see structured chapter+sentence JSON in the browser console.
+2. Sectioning + sentence splitting validated on three PDFs (TOC, no-TOC, scanned-error).
+3. `kokoro-js` integration: load model with progress UI, generate one sentence, play via `<audio>`.
+4. IndexedDB cache via `idb`: store/retrieve audio Blob URLs keyed `bookId:chapterId:sentenceIndex`.
+5. Sentence-ahead buffer queue (3–5 ahead, `requestIdleCallback` with `setTimeout(0)` fallback).
+6. Reader UI: two-pane, sentence highlighting, follow-mode autoscroll, tap-to-seek.
+7. PlayerBar: ±15s, prev/next sentence, prev/next chapter, speed picker, sleep timer, MediaSession.
+8. Library + progress: home screen with cover thumbnails, "Continue listening" card.
+9. PWA polish: manifest, service worker (next-pwa) caching app shell + Kokoro ONNX, iOS meta. Deploy to Vercel.
+
+## Run locally (Step 1)
+
+```bash
+npm install            # postinstall copies pdfjs worker into public/
+npm run dev            # http://localhost:3000
+```
+
+Drop any PDF on the upload zone. Open DevTools → Console. You should see:
+
+```
+[PdfUploader] extracted book: { title, pageCount, chapters: [...] }
+[PdfUploader] JSON: <pretty-printed full structure>
+```
+
+The page shows a summary card with chapter count, sentence count, detection
+mode (`outline` | `heading` | `wordSplit`), and the first 12 chapter titles.
+
+### Verify the three sectioning tiers
+
+- **TOC tier** — drop a PDF that has bookmarks. Detection mode should be `outline`.
+- **Heading tier** — drop a PDF without bookmarks but with visually large
+  headings. Detection mode should be `heading`.
+- **Scanned PDF** — drop a scanned/image-only PDF. The UI shows a friendly
+  error: "This PDF appears to be scanned images. OCR is not supported in v1."
+
+Type-check:
+
+```bash
+npx tsc --noEmit
+```
 
 ## Layout
 
 ```
-backend/   FastAPI app, ingest pipeline, Arq worker
-frontend/  Vite React PWA
+app/
+  layout.tsx             PWA meta + iOS Add-to-Home-Screen tags
+  page.tsx               Step 1 home — PDF uploader
+  globals.css            Tailwind base
+components/
+  PdfUploader.tsx        Drag-and-drop + extract → sectioning → console.log
+lib/
+  pdf/
+    extract.ts           pdfjs-dist text extraction with outline + scanned detect
+    sentences.ts         Intl.Segmenter with regex + abbreviation-aware fallback
+    sectioning.ts        Three-tier chapter detection
+public/
+  pdf.worker.min.mjs     Copied at postinstall by scripts/copy-pdf-worker.mjs
+scripts/
+  copy-pdf-worker.mjs    Postinstall hook
 ```
 
-## Backend — quick start
+## Vercel deploy (later)
+
+When Step 9 lands:
 
 ```bash
-# system: ffmpeg (with libmp3lame) is required for audio encoding.
-# macOS:   brew install ffmpeg
-# Debian:  sudo apt install -y ffmpeg
-
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-# Optional ML stack — heavy. Install only when you want real TTS+align:
-pip install -e ".[ml]"
-
-# 1) Run Redis somewhere (localhost:6379 by default).
-# 2) Run the API:
-uvicorn app.main:app --reload --port 8000
-# 3) Run the worker (separate terminal, only when ABR_USE_ARQ=true):
-arq app.workers.arq_worker.WorkerSettings
+vercel --prod   # no env vars needed
 ```
-
-If `kokoro` / `whisperx` are not installed, ingestion falls back to a synthetic
-silent-audio + word-by-uniform-time stub so the rest of the app remains
-exercisable end-to-end. Wire real models for production use.
-
-## Frontend — quick start
-
-```bash
-cd frontend
-npm install
-npm run dev
-# Build:
-npm run build && npm run preview
-```
-
-Set `VITE_API_BASE` in `frontend/.env` to point at the backend (defaults to
-`http://localhost:8000`).
-
-## Install on iPhone
-
-Open the deployed site in Safari → Share → **Add to Home Screen**. The app icon
-appears, opens full-screen, no browser chrome. Lock-screen audio controls work
-through the Media Session API. HTTPS is required for both PWA install and
-Media Session.
-
-## Endpoints
-
-```
-POST   /books/upload              multipart PDF, returns {book_id, job_id}
-GET    /jobs/{job_id}/stream      SSE: {progress, status, current_step}
-GET    /books                     list books
-GET    /books/{id}                metadata + sections + chunk index
-GET    /books/{id}/chunks/{cid}   chunk text + words[] + audio_url
-GET    /books/{id}/manifest       full chunk list (offline download)
-GET    /audio/{book_id}/{cid}.mp3 audio (Range supported)
-PUT    /books/{id}/progress       save current position
-GET    /books/{id}/progress       load saved position
-DELETE /books/{id}                delete book + audio
-```
-
-## Decisions / deviations from spec
-
-- **Synchronous fallback for ingest.** When Redis/Arq aren't running, the
-  upload endpoint runs the ingest pipeline in a `BackgroundTasks` task. Arq is
-  the recommended path for real workloads; the fallback exists so the scaffold
-  is runnable on a laptop without infra.
-- **Stub TTS+align when models absent.** `pipeline/tts.py` and
-  `pipeline/alignment.py` detect missing imports and emit a silent MP3 + a
-  uniform word-time table so the reader UI works for testing. Install
-  `kokoro` and `whisperx` to use the real models.
-- **No auth.** Single-user, as per spec section 8.
-
-## Definition of done
-
-See `BUILD.md` § 9 in the original spec — every box must check.
