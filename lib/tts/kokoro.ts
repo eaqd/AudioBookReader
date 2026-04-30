@@ -122,6 +122,33 @@ export async function loadKokoro(
       throw new ModelLoadError(describeLoadError(lastErr, "fetching the speech runtime"), lastErr);
     }
 
+    // Pin ORT WASM runtime files to a concrete CDN URL. When kokoro-js is
+    // loaded via /+esm the JS is bundled but ORT resolves its .wasm files
+    // separately at runtime, and silent path-resolution failures look
+    // exactly like an inference hang (the previous "stalled on a 58-char
+    // chunk after 60s" the user reported). Also disable threading: iOS
+    // Safari can't use SharedArrayBuffer-based threads without
+    // cross-origin isolation, and ORT's fallback path can hang.
+    try {
+      const env = (mod as unknown as {
+        env?: {
+          wasmPaths?: string | Record<string, string>;
+          backends?: {
+            onnx?: { wasm?: { numThreads?: number; proxy?: boolean } };
+          };
+        };
+      }).env;
+      if (env) {
+        env.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
+        if (env.backends?.onnx?.wasm) {
+          env.backends.onnx.wasm.numThreads = 1;
+          env.backends.onnx.wasm.proxy = false;
+        }
+      }
+    } catch {
+      /* best-effort; if this fails the underlying defaults still apply */
+    }
+
     try {
       const tts = await mod.KokoroTTS.from_pretrained(MODEL_ID, {
         dtype,
@@ -198,8 +225,10 @@ export function getActiveVoice(): string {
   return _voice ?? "af_bella";
 }
 
-/** Single-piece time budget. WASM on phone shouldn't exceed this for ≤320 chars. */
-const SYNTH_PIECE_TIMEOUT_MS = 60_000;
+/** Single-piece time budget. WASM on phone should easily finish ≤320 chars
+ *  in under this; if it hits the cap, something is structurally broken
+ *  (paths, threading, or model corruption) and we want to surface fast. */
+const SYNTH_PIECE_TIMEOUT_MS = 30_000;
 
 export interface SynthProgress {
   /** Index of the piece we're currently synthesizing (1-based for display). */
@@ -309,13 +338,9 @@ function describeLoadError(e: unknown, context: string): string {
 }
 
 function pickDtype(): ModelDtype {
-  // On phones, q4 has roughly half the memory footprint of q8 — important
-  // because iOS Safari kills tabs that exceed ~1.5GB and the WASM heap +
-  // model + audio runtime add up fast. Quality is still acceptable. On
-  // desktop, q8 is the better quality/memory trade-off.
-  if (typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
-    return "q4";
-  }
+  // q8 has reasonable size and known to actually run inference on iOS
+  // Safari's WASM runtime. q4 sometimes hangs on phones (model-version /
+  // ORT-version interaction we hit), so don't use it as default.
   return "q8";
 }
 
