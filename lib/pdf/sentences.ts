@@ -5,7 +5,13 @@
  *   1. Strip stuff that sounds bad in TTS (LaTeX, code fences, box-drawing).
  *   2. Use Intl.Segmenter('en', { granularity: 'sentence' }) when available.
  *   3. Regex fallback that respects common abbreviations + decimals + ellipses.
+ *   4. Hard-cap each output segment at MAX_SENTENCE_CHARS — front matter
+ *      (dedications, table of contents, copyright pages) often has no
+ *      sentence punctuation and would otherwise produce 1000+ char blobs
+ *      that break TTS pacing and hang the synthesizer.
  */
+
+const MAX_SENTENCE_CHARS = 350;
 
 const ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "jr", "sr", "st", "prof", "rev", "hon",
@@ -44,18 +50,70 @@ export function splitSentences(text: string): string[] {
   const cleaned = cleanForSpeech(text);
   if (!cleaned) return [];
 
+  let parts: string[];
   if (hasIntlSegmenter()) {
     const Segmenter = (Intl as unknown as { Segmenter: SegmenterCtor }).Segmenter;
     const seg = new Segmenter("en", { granularity: "sentence" });
-    const out: string[] = [];
+    parts = [];
     for (const part of seg.segment(cleaned)) {
       const s = part.segment.trim();
-      if (s) out.push(s);
+      if (s) parts.push(s);
     }
-    return mergeAbbreviationFalsePositives(out);
+    parts = mergeAbbreviationFalsePositives(parts);
+  } else {
+    parts = regexSplit(cleaned);
   }
+  return enforceMaxLength(parts, MAX_SENTENCE_CHARS);
+}
 
-  return regexSplit(cleaned);
+/**
+ * Break any segment longer than `maxLen` chars into smaller pieces. Tries
+ * progressively weaker boundaries — sentence punctuation, then clause
+ * punctuation, then commas, then word boundaries.
+ */
+export function enforceMaxLength(sentences: string[], maxLen: number): string[] {
+  const out: string[] = [];
+  for (const s of sentences) {
+    if (s.length <= maxLen) {
+      out.push(s);
+      continue;
+    }
+    out.push(...greedySplit(s, maxLen));
+  }
+  return out;
+}
+
+function greedySplit(text: string, maxLen: number): string[] {
+  const result: string[] = [];
+  let remaining = text.trim();
+  while (remaining.length > maxLen) {
+    const cut =
+      cutAt(remaining, maxLen, /[.!?](?=\s|$)/g) ??
+      cutAt(remaining, maxLen, /[;:—](?=\s|$)/g) ??
+      cutAt(remaining, maxLen, /,(?=\s)/g) ??
+      cutAt(remaining, maxLen, /\s(?=\S)/g) ??
+      maxLen;
+    const piece = remaining.slice(0, cut).trim();
+    if (piece) result.push(piece);
+    remaining = remaining.slice(cut).trim();
+  }
+  if (remaining) result.push(remaining);
+  return result;
+}
+
+/**
+ * Return the END index (exclusive) of the rightmost match of `re` whose
+ * match end is ≤ maxLen, or null if none found. We prefer cuts as close
+ * to maxLen as possible (without exceeding) so each piece stays full.
+ */
+function cutAt(text: string, maxLen: number, re: RegExp): number | null {
+  let best: number | null = null;
+  for (const m of text.matchAll(re)) {
+    const end = m.index + m[0].length;
+    if (end <= maxLen) best = end;
+    else break;
+  }
+  return best;
 }
 
 /**

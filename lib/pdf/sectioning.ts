@@ -244,12 +244,20 @@ function sectionsByWordSplit(paragraphs: Paragraph[], maxWords = 3000): Chapter[
 /* --- helpers --------------------------------------------------------- */
 
 function buildChapter(id: string, title: string, startPage: number, paras: Paragraph[]): Chapter {
-  const text = paras.map((p) => p.text).join(" ");
+  // Insert a hard sentence terminator between paragraphs that don't already
+  // end with one. Front matter pages often have no punctuation, which
+  // would otherwise fuse contiguous paragraphs into a single 1000+ char
+  // "sentence" that hangs TTS.
+  const joined = paras
+    .map((p) => p.text.trim())
+    .filter(Boolean)
+    .map((t) => (/[.!?][)"'\s]*$/.test(t) ? t : t + "."))
+    .join(" ");
   return {
     id,
     title: title || "Untitled",
     startPage,
-    sentences: splitSentences(text)
+    sentences: splitSentences(joined)
   };
 }
 

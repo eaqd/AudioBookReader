@@ -18,6 +18,7 @@
 import { putAudio } from "@/lib/storage/audio";
 import { audioId, type AudioChunkRow } from "@/lib/storage/db";
 import { floatTo16BitWavBlob } from "@/lib/audio/wav";
+import { enforceMaxLength } from "@/lib/pdf/sentences";
 
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
@@ -25,6 +26,13 @@ const CDN_URLS = [
   "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm",
   "https://esm.sh/kokoro-js@1.2.1?bundle"
 ];
+
+/**
+ * Maximum text length we send to Kokoro in a single forward pass. Long
+ * inputs not only sound bad (no breath / pacing) but also stall the
+ * synthesizer for many seconds. We split locally and concat audio.
+ */
+const SYNTH_CHUNK_CHAR_LIMIT = 320;
 
 export type ModelDtype = "fp32" | "fp16" | "q8" | "q4" | "q4f16";
 export type ModelDevice = "wasm" | "webgpu" | "cpu";
@@ -201,17 +209,42 @@ export async function synthesize(
   if (!_instance) {
     throw new Error("Kokoro is not loaded. Call loadKokoro() first.");
   }
-  const result = await _instance.generate(text, { voice, speed: 1.0 });
-  const audio = result.audio;
-  const sampleRate = result.sampling_rate;
-  const blob = floatTo16BitWavBlob(audio, sampleRate);
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error("Cannot synthesize empty text.");
+  }
+
+  const pieces =
+    trimmed.length <= SYNTH_CHUNK_CHAR_LIMIT
+      ? [trimmed]
+      : enforceMaxLength([trimmed], SYNTH_CHUNK_CHAR_LIMIT);
+
+  // Synthesize each piece sequentially. Sequential matters: ORT WASM
+  // sessions aren't safe to run concurrently, and on mobile we'd OOM.
+  const buffers: Float32Array[] = [];
+  let sampleRate = 24000;
+  for (const piece of pieces) {
+    const result = await _instance.generate(piece, { voice, speed: 1.0 });
+    buffers.push(result.audio);
+    sampleRate = result.sampling_rate;
+  }
+
+  const total = buffers.reduce((n, b) => n + b.length, 0);
+  const merged = new Float32Array(total);
+  let off = 0;
+  for (const b of buffers) {
+    merged.set(b, off);
+    off += b.length;
+  }
+
+  const blob = floatTo16BitWavBlob(merged, sampleRate);
   const row: AudioChunkRow = {
     id: audioId(bookId, chapterId, sentenceIdx),
     bookId,
     chapterId,
     sentenceIdx,
     voice,
-    duration: audio.length / sampleRate,
+    duration: merged.length / sampleRate,
     blob
   };
   await putAudio(row);
