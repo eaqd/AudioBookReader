@@ -127,12 +127,26 @@ export class PlayerEngine {
     return () => this.listeners.delete(fn);
   }
 
-  /** Start at the given global sentence index. */
+  /**
+   * Set the current sentence index. When `autoplay` is true (or when audio
+   * for this sentence is already cached) this also materializes the audio
+   * and starts playback. Otherwise it only updates state — no model load,
+   * no synthesis — so callers can position the reader on mount without
+   * triggering a speech-model fetch before the user has pressed Play.
+   */
   async seekToSentence(globalIdx: number, autoplay = true): Promise<void> {
     const ref = this.sentences[globalIdx];
     if (!ref) return;
     this.currentIdx = globalIdx;
     this.preloadedFor = null;
+
+    if (!autoplay) {
+      // Lightweight position update only.
+      this.active.pause();
+      this.emit();
+      return;
+    }
+
     const url = await this.ensureUrl(globalIdx);
     this.swapTo(this.active, url);
     this.active.playbackRate = this.rate;
@@ -140,8 +154,7 @@ export class PlayerEngine {
     await this.waitMetadata(this.active);
     this.emit();
     void this.preloadAhead();
-    if (autoplay) await this.play();
-    else this.startTicker();
+    await this.play();
   }
 
   /** Seek within the current sentence (in seconds). */
@@ -153,8 +166,17 @@ export class PlayerEngine {
 
   async play(): Promise<void> {
     try {
+      // First press after a positional seek: materialize audio for the
+      // current sentence now, then play it.
+      if (!this.active.src) {
+        const url = await this.ensureUrl(this.currentIdx);
+        this.swapTo(this.active, url);
+        this.active.playbackRate = this.rate;
+        await this.waitMetadata(this.active);
+      }
       await this.active.play();
       this.startTicker();
+      void this.preloadAhead();
       this.emit();
     } catch (e) {
       this.emit();

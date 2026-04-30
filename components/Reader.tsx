@@ -312,7 +312,7 @@ export function Reader({ bookId }: ReaderProps) {
         </button>
       </header>
 
-      <ModelStatus status={modelStatus} />
+      <ModelStatus status={modelStatus} onRetry={ensureModelLoaded} />
 
       <TextPane
         chapters={loaded.content.chapters}
@@ -434,19 +434,27 @@ function FullScreenLoading({ message }: { message: string }) {
 }
 
 function ModelStatus({
-  status
+  status, onRetry
 }: {
   status:
     | { phase: "idle" }
     | { phase: "loading"; progress: number; file?: string }
     | { phase: "ready" }
     | { phase: "error"; message: string };
+  onRetry: () => void;
 }) {
   if (status.phase === "idle" || status.phase === "ready") return null;
   if (status.phase === "error") {
     return (
-      <div className="mx-4 sm:mx-6 mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-200">
-        Couldn&rsquo;t load the speech model: {status.message}
+      <div className="mx-4 sm:mx-6 mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <p>Couldn&rsquo;t load the speech model.</p>
+        <p className="mt-1 text-xs text-red-300/90">{status.message}</p>
+        <button
+          onClick={onRetry}
+          className="mt-2 inline-flex items-center gap-2 rounded-md bg-red-500/20 hover:bg-red-500/30 px-3 py-1.5 text-xs text-red-100"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -463,9 +471,11 @@ function ModelStatus({
           style={{ width: `${Math.max(2, pct)}%` }}
         />
       </div>
-      {status.file && (
-        <p className="mt-1 text-[11px] text-subtle truncate">{status.file}</p>
-      )}
+      <p className="mt-1 text-[11px] text-subtle truncate">
+        {status.file
+          ? status.file
+          : "Downloading the voice — please keep the page open. Wi-Fi is much faster than cellular."}
+      </p>
     </div>
   );
 }

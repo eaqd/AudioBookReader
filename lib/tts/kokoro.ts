@@ -1,14 +1,18 @@
 /**
- * Lazy Kokoro-82M loader with progress reporting.
- *
- * Model files are fetched from Hugging Face on first use; transformers.js
- * caches them automatically in IndexedDB so subsequent loads are instant.
+ * Lazy Kokoro-82M loader with progress reporting + CDN fallback.
  *
  * Why CDN-load kokoro-js at runtime instead of npm-bundling:
  * Bundling kokoro-js pulls in @huggingface/transformers + onnxruntime-web,
  * the latter ships a massive WGSL shader as an inline template literal
- * that crashes Next.js's SWC minifier. Loading from jsDelivr's `+esm`
- * endpoint sidesteps the whole issue and lets the SW cache it once.
+ * that crashes Next.js's SWC minifier. Loading via dynamic import with
+ * `webpackIgnore` sidesteps the whole issue and lets the SW cache it once.
+ *
+ * Resilience:
+ *  - Try jsDelivr first, fall back to esm.sh on import failure.
+ *  - Surface descriptive error messages for AbortError / network errors
+ *    (very common on cellular: 80MB model download is fragile).
+ *  - Treat the model load itself as recoverable: callers see a typed
+ *    error and can offer a retry button.
  */
 
 import { putAudio } from "@/lib/storage/audio";
@@ -16,18 +20,20 @@ import { audioId, type AudioChunkRow } from "@/lib/storage/db";
 import { floatTo16BitWavBlob } from "@/lib/audio/wav";
 
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
-const KOKORO_CDN_URL = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
+
+const CDN_URLS = [
+  "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm",
+  "https://esm.sh/kokoro-js@1.2.1?bundle"
+];
 
 export type ModelDtype = "fp32" | "fp16" | "q8" | "q4" | "q4f16";
 export type ModelDevice = "wasm" | "webgpu" | "cpu";
 
 export interface ModelLoadProgress {
-  /** transformers.js status string. */
   status: "initiate" | "download" | "progress" | "done" | "ready";
   file?: string;
   loaded?: number;
   total?: number;
-  /** 0..1, computed on each tick. */
   fraction: number;
 }
 
@@ -39,15 +45,34 @@ interface KokoroLike {
   voices: Record<string, unknown>;
 }
 
+interface KokoroModule {
+  KokoroTTS: {
+    from_pretrained: (
+      id: string,
+      opts: {
+        dtype: ModelDtype;
+        device: ModelDevice;
+        progress_callback: (raw: unknown) => void;
+      }
+    ) => Promise<KokoroLike>;
+  };
+}
+
 let _instance: KokoroLike | null = null;
 let _loading: Promise<KokoroLike> | null = null;
 let _voice: string | null = null;
 let _device: ModelDevice | null = null;
 
+export class ModelLoadError extends Error {
+  constructor(message: string, public readonly cause?: unknown) {
+    super(message);
+    this.name = "ModelLoadError";
+  }
+}
+
 export async function loadKokoro(
   options: {
     onProgress?: (p: ModelLoadProgress) => void;
-    /** prefer WebGPU when available, fallback to WASM. */
     preferWebGPU?: boolean;
   } = {}
 ): Promise<void> {
@@ -74,43 +99,69 @@ export async function loadKokoro(
   }
 
   _loading = (async () => {
-    const mod = (await import(/* webpackIgnore: true */ KOKORO_CDN_URL)) as {
-      KokoroTTS: {
-        from_pretrained: (
-          id: string,
-          opts: {
-            dtype: ModelDtype;
-            device: ModelDevice;
-            progress_callback: (raw: unknown) => void;
-          }
-        ) => Promise<KokoroLike>;
-      };
-    };
-    const tts = await mod.KokoroTTS.from_pretrained(MODEL_ID, {
-      dtype,
-      device,
-      progress_callback: (raw: unknown) => {
-        if (!options.onProgress) return;
-        const p = raw as {
-          status: ModelLoadProgress["status"];
-          file?: string;
-          loaded?: number;
-          total?: number;
-        };
-        if (p.file != null && p.total != null) totalBytesByFile.set(p.file, p.total);
-        if (p.file != null && p.loaded != null) loadedBytesByFile.set(p.file, p.loaded);
-        options.onProgress({
-          status: p.status,
-          file: p.file,
-          loaded: p.loaded,
-          total: p.total,
-          fraction: fraction()
-        });
+    let mod: KokoroModule | null = null;
+    let lastErr: unknown = null;
+    for (const url of CDN_URLS) {
+      try {
+        mod = (await import(/* webpackIgnore: true */ url)) as KokoroModule;
+        break;
+      } catch (e) {
+        lastErr = e;
+        // Try the next CDN.
       }
-    });
-    _instance = tts;
-    return _instance;
+    }
+    if (!mod) {
+      throw new ModelLoadError(describeLoadError(lastErr, "fetching the speech runtime"), lastErr);
+    }
+
+    try {
+      const tts = await mod.KokoroTTS.from_pretrained(MODEL_ID, {
+        dtype,
+        device,
+        progress_callback: (raw: unknown) => {
+          if (!options.onProgress) return;
+          const p = raw as {
+            status: ModelLoadProgress["status"];
+            file?: string;
+            loaded?: number;
+            total?: number;
+          };
+          if (p.file != null && p.total != null) totalBytesByFile.set(p.file, p.total);
+          if (p.file != null && p.loaded != null) loadedBytesByFile.set(p.file, p.loaded);
+          options.onProgress({
+            status: p.status,
+            file: p.file,
+            loaded: p.loaded,
+            total: p.total,
+            fraction: fraction()
+          });
+        }
+      });
+      _instance = tts;
+      return _instance;
+    } catch (e) {
+      // If WebGPU init blew up, retry once with WASM.
+      if (device === "webgpu") {
+        try {
+          _device = "wasm";
+          const tts = await mod.KokoroTTS.from_pretrained(MODEL_ID, {
+            dtype,
+            device: "wasm",
+            progress_callback: () => {}
+          });
+          _instance = tts;
+          return _instance;
+        } catch (e2) {
+          throw new ModelLoadError(
+            describeLoadError(e2, "loading the speech model (WASM fallback)"),
+            e2
+          );
+        }
+      }
+      throw new ModelLoadError(describeLoadError(e, "loading the speech model"), e);
+    }
   })();
+
   try {
     await _loading;
   } finally {
@@ -139,9 +190,7 @@ export function getActiveVoice(): string {
   return _voice ?? "af_bella";
 }
 
-/**
- * Synthesize one sentence; persists the result to IndexedDB.
- */
+/** Synthesize one sentence; persists the result to IndexedDB. */
 export async function synthesize(
   bookId: string,
   chapterId: string,
@@ -171,12 +220,23 @@ export async function synthesize(
 
 /* ----------------------------- helpers ------------------------------- */
 
-function pickDtype(): ModelDtype {
-  // Mobile (especially iOS) does best with q8 — small and fast, quality
-  // is still natural. Desktop with WebGPU can afford fp32 but q8 is fine.
-  if (typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
-    return "q8";
+function describeLoadError(e: unknown, context: string): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const name = e instanceof Error ? e.name : "";
+  if (name === "AbortError" || /aborted/i.test(msg)) {
+    return `${context}: the connection was cut off mid-download. This often happens on cellular — try again on Wi-Fi.`;
   }
+  if (/Failed to fetch|NetworkError|network/i.test(msg)) {
+    return `${context}: network error. Check your connection and try again.`;
+  }
+  if (/cors/i.test(msg)) {
+    return `${context}: blocked by browser security. Try a hard reload.`;
+  }
+  return `${context}: ${msg || "unknown error"}`;
+}
+
+function pickDtype(): ModelDtype {
+  // q8 is small enough for mobile, fast on WASM, still natural-sounding.
   return "q8";
 }
 
