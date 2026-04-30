@@ -35,8 +35,7 @@ export function PdfUploader() {
         voice: DEFAULT_VOICE,
         pageCount: result.pageCount,
         detectionMode: result.detectionMode,
-        chapters: result.chapters,
-        pdfBlob: file
+        chapters: result.chapters
       });
       router.push(`/reader/${row.id}`);
     } catch (e) {

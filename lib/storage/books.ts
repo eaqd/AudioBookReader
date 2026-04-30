@@ -14,7 +14,9 @@ export interface AddBookInput {
   pageCount: number;
   detectionMode: BookContent["detectionMode"];
   chapters: ChapterPayload[];
-  pdfBlob: Blob;
+  // pdfBlob intentionally omitted: storing the original PDF (often tens of
+  // MB) alongside generated audio adds memory pressure on mobile. We can
+  // re-add a "Save original" toggle later if anyone needs it.
 }
 
 export async function addBook(input: AddBookInput): Promise<BookRow> {
@@ -33,11 +35,10 @@ export async function addBook(input: AddBookInput): Promise<BookRow> {
     addedAt: Date.now()
   };
   const content: BookContentRow = { bookId: id, chapters: input.chapters };
-  const tx = db.transaction(["books", "bookContent", "pdfBlobs"], "readwrite");
+  const tx = db.transaction(["books", "bookContent"], "readwrite");
   await Promise.all([
     tx.objectStore("books").put(row),
-    tx.objectStore("bookContent").put(content),
-    tx.objectStore("pdfBlobs").put({ bookId: id, blob: input.pdfBlob })
+    tx.objectStore("bookContent").put(content)
   ]);
   await tx.done;
   return row;

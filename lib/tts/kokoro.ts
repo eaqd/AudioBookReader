@@ -309,7 +309,13 @@ function describeLoadError(e: unknown, context: string): string {
 }
 
 function pickDtype(): ModelDtype {
-  // q8 is small enough for mobile, fast on WASM, still natural-sounding.
+  // On phones, q4 has roughly half the memory footprint of q8 — important
+  // because iOS Safari kills tabs that exceed ~1.5GB and the WASM heap +
+  // model + audio runtime add up fast. Quality is still acceptable. On
+  // desktop, q8 is the better quality/memory trade-off.
+  if (typeof navigator !== "undefined" && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+    return "q4";
+  }
   return "q8";
 }
 

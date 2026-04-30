@@ -20,8 +20,12 @@ declare const self: ServiceWorkerGlobalScope;
 
 const serwist = new Serwist({
   precacheEntries: self.__SW_MANIFEST,
-  skipWaiting: true,
-  clientsClaim: true,
+  // Don't aggressively swap an updated SW into active tabs — the user is
+  // likely mid-listen and a hot-swap can interrupt audio + lose state.
+  // The new SW will activate on next full reload, which is the right
+  // behavior for a stateful audiobook reader.
+  skipWaiting: false,
+  clientsClaim: false,
   navigationPreload: true,
   runtimeCaching: [
     // Hugging Face: Kokoro model files. Big, immutable — perfect for
