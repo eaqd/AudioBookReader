@@ -186,11 +186,13 @@ export function Reader({ bookId }: ReaderProps) {
   const togglePlay = useCallback(async () => {
     const eng = engineRef.current;
     if (!eng) return;
+    // Synchronously unlock iOS audio inside the click. Must run before any
+    // await — once the gesture expires, .play() will be blocked.
+    eng.prime();
     if (eng.isPlaying()) {
       eng.pause();
       return;
     }
-    // First press: ensure model loaded, then play.
     const ok = await ensureModelLoaded();
     if (!ok) return;
     try {
@@ -203,6 +205,8 @@ export function Reader({ bookId }: ReaderProps) {
   const onSeekTextSentence = useCallback(
     async (chapterIdx: number, sentenceIdx: number) => {
       if (!loaded || !engineRef.current) return;
+      // Same iOS-unlock dance as togglePlay.
+      engineRef.current.prime();
       const ok = await ensureModelLoaded();
       if (!ok) return;
       const target = loaded.flat.find(
@@ -359,6 +363,8 @@ export function Reader({ bookId }: ReaderProps) {
         activeChapterIdx={chapterIdx}
         onClose={() => setTocOpen(false)}
         onSelect={async (i) => {
+          // Prime synchronously before closing drawer / awaiting model.
+          engineRef.current?.prime();
           setTocOpen(false);
           const sr = loaded.flat.find((s) => s.chapterIdx === i && s.sentenceIdx === 0);
           if (sr) {

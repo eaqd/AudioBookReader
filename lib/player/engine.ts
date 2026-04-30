@@ -12,6 +12,7 @@
 
 import { getAudio } from "@/lib/storage/audio";
 import { synthesize, type SynthProgress } from "@/lib/tts/kokoro";
+import { floatTo16BitWavBlob } from "@/lib/audio/wav";
 
 export interface SentenceRef {
   /** Global index in the book (0..total-1). */
@@ -67,6 +68,8 @@ export class PlayerEngine {
   private generating = new Set<number>();
   private foregroundSynth: { idx: number; progress: SynthProgress | null } | null = null;
   private lastError: string | null = null;
+  private unlocked = false;
+  private silentUrl: string | null = null;
 
   constructor(config: EngineConfig) {
     this.cfg = {
@@ -132,6 +135,37 @@ export class PlayerEngine {
   clearError() {
     this.lastError = null;
     this.emit();
+  }
+
+  /**
+   * iOS Safari blocks .play() unless it was initiated synchronously inside
+   * a user gesture. After awaiting model load + synthesis, the gesture has
+   * long expired. Workaround: as soon as the user taps Play (or a sentence),
+   * call this *synchronously* — it kicks both audio elements with a tiny
+   * silent WAV so they enter the "user-interacted" state and remain
+   * playable for the rest of the session, even after long awaits.
+   *
+   * Safe to call repeatedly; only the first call has any effect.
+   */
+  prime(): void {
+    if (this.unlocked) return;
+    this.unlocked = true;
+    if (!this.silentUrl) {
+      // 50ms of silence at 8kHz mono 16-bit. Browser can decode, iOS happy.
+      const samples = new Float32Array(400);
+      const blob = floatTo16BitWavBlob(samples, 8000);
+      this.silentUrl = URL.createObjectURL(blob);
+    }
+    for (const el of [this.a, this.b]) {
+      try {
+        el.src = this.silentUrl;
+        el.load();
+        const p = el.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } catch {
+        /* fall through; we'll get a NotAllowedError later if needed */
+      }
+    }
   }
 
   subscribe(fn: EngineListener): () => void {
@@ -290,6 +324,10 @@ export class PlayerEngine {
     });
     for (const url of this.blobUrls.values()) URL.revokeObjectURL(url);
     this.blobUrls.clear();
+    if (this.silentUrl) {
+      URL.revokeObjectURL(this.silentUrl);
+      this.silentUrl = null;
+    }
     this.listeners.clear();
   }
 
