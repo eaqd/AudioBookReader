@@ -91,7 +91,10 @@ export async function loadKokoro(
   }
 
   const dtype = pickDtype();
-  const device = await pickDevice(options.preferWebGPU ?? true);
+  // Default to WASM. WebGPU is too flaky on iOS Safari right now —
+  // navigator.gpu can be present but actual inference fails mid-init,
+  // and we'd then fall back to WASM in a half-initialized state.
+  const device = await pickDevice(options.preferWebGPU ?? false);
   _device = device;
 
   const totalBytesByFile = new Map<string, number>();
@@ -122,32 +125,11 @@ export async function loadKokoro(
       throw new ModelLoadError(describeLoadError(lastErr, "fetching the speech runtime"), lastErr);
     }
 
-    // Pin ORT WASM runtime files to a concrete CDN URL. When kokoro-js is
-    // loaded via /+esm the JS is bundled but ORT resolves its .wasm files
-    // separately at runtime, and silent path-resolution failures look
-    // exactly like an inference hang (the previous "stalled on a 58-char
-    // chunk after 60s" the user reported). Also disable threading: iOS
-    // Safari can't use SharedArrayBuffer-based threads without
-    // cross-origin isolation, and ORT's fallback path can hang.
-    try {
-      const env = (mod as unknown as {
-        env?: {
-          wasmPaths?: string | Record<string, string>;
-          backends?: {
-            onnx?: { wasm?: { numThreads?: number; proxy?: boolean } };
-          };
-        };
-      }).env;
-      if (env) {
-        env.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
-        if (env.backends?.onnx?.wasm) {
-          env.backends.onnx.wasm.numThreads = 1;
-          env.backends.onnx.wasm.proxy = false;
-        }
-      }
-    } catch {
-      /* best-effort; if this fails the underlying defaults still apply */
-    }
+    // Note: do NOT pin env.wasmPaths. The transformers.js bundled inside
+    // kokoro-js was compiled against a specific onnxruntime-web version,
+    // and pointing wasmPaths at any other version produces the classic
+    // "t.getValue is not a function" mismatch error. The default
+    // wasmPaths resolves to the matching version automatically.
 
     try {
       const tts = await mod.KokoroTTS.from_pretrained(MODEL_ID, {
