@@ -2,14 +2,45 @@ import { PdfUploader } from "@/components/PdfUploader";
 
 export default function HomePage() {
   return (
-    <main className="min-h-screen flex flex-col">
-      <header className="px-6 pt-8 pb-2">
-        <h1 className="text-2xl font-semibold">Audiobook Reader</h1>
-        <p className="text-sm opacity-60">Step 1 — PDF text extraction.</p>
+    <main className="min-h-screen flex flex-col safe-top">
+      <header className="px-5 sm:px-8 pt-6 pb-3 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Logo />
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight">Audiobook Reader</h1>
+            <p className="text-xs text-muted">Your PDFs, narrated.</p>
+          </div>
+        </div>
+        <span className="text-[10px] uppercase tracking-[0.18em] text-subtle">
+          Step 1 — Extract
+        </span>
       </header>
-      <section className="flex-1 flex items-start justify-center px-4 pt-8">
+
+      <section className="flex-1 px-4 sm:px-8 pt-4 pb-10 max-w-3xl w-full mx-auto">
+        <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mt-2 mb-1">
+          Add a book
+        </h2>
+        <p className="text-sm text-muted mb-6">
+          Drop in any text-based PDF. We&rsquo;ll detect chapters and split sentences so the
+          audiobook can sync to the page later.
+        </p>
+
         <PdfUploader />
       </section>
     </main>
+  );
+}
+
+function Logo() {
+  return (
+    <div className="h-9 w-9 rounded-full grid place-items-center bg-accent text-black shadow-card">
+      {/* simple "headphones" mark */}
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M3 12a9 9 0 0 1 18 0v6" />
+        <rect x="3" y="13" width="5" height="7" rx="1.5" />
+        <rect x="16" y="13" width="5" height="7" rx="1.5" />
+      </svg>
+    </div>
   );
 }

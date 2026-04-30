@@ -2,8 +2,41 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  color-scheme: dark;
+}
+
 html, body { height: 100%; }
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  background:
+    radial-gradient(1200px 600px at -10% -10%, rgba(29, 185, 84, 0.10), transparent 60%),
+    radial-gradient(900px 500px at 110% 0%, rgba(80, 56, 200, 0.10), transparent 55%),
+    #000;
+  color: #ffffff;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.01em;
+}
+
+/* hide scrollbars on small mobile while keeping function */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* iPhone safe areas */
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-top    { padding-top: env(safe-area-inset-top); }
+
+/* Spotify-style focus ring on the upload card */
+.upload-card {
+  background:
+    linear-gradient(180deg, #1c1c1c 0%, #131313 100%);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.upload-card:hover { border-color: rgba(255,255,255,0.16); }
+.upload-card.is-drag {
+  border-color: #1DB954;
+  background:
+    linear-gradient(180deg, #173b27 0%, #0f1d15 100%);
 }
