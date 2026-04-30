@@ -25,6 +25,9 @@ export interface PlayerBarProps {
   onSleep: (minutes: number, endOfChapter: boolean) => void;
   sleepRemainingMs: number | null;
   generating: boolean;
+  synthProgress: { piece: number; total: number } | null;
+  lastError: string | null;
+  onClearError: () => void;
 }
 
 const RATES = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
@@ -37,13 +40,24 @@ export function PlayerBar(p: PlayerBarProps) {
           <span className="text-[11px] uppercase tracking-[0.18em] text-subtle">
             Now playing
           </span>
-          <span className="text-xs text-muted truncate">{p.chapterTitle}</span>
+          <span className="text-xs text-muted truncate flex-1">{p.chapterTitle}</span>
           {p.generating && (
-            <span className="ml-auto text-[10px] text-accent animate-pulse">
-              generating…
+            <span className="ml-auto text-[10px] text-accent animate-pulse tabular-nums">
+              generating
+              {p.synthProgress
+                ? ` ${p.synthProgress.piece}/${p.synthProgress.total}`
+                : "…"}
             </span>
           )}
         </div>
+        {p.lastError && (
+          <div className="mb-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200 flex items-center gap-2">
+            <span className="flex-1">{p.lastError}</span>
+            <button onClick={p.onClearError} className="text-red-100 underline">
+              dismiss
+            </button>
+          </div>
+        )}
 
         <Scrubber
           positionSec={p.positionSec}

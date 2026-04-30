@@ -198,13 +198,24 @@ export function getActiveVoice(): string {
   return _voice ?? "af_bella";
 }
 
+/** Single-piece time budget. WASM on phone shouldn't exceed this for ≤320 chars. */
+const SYNTH_PIECE_TIMEOUT_MS = 60_000;
+
+export interface SynthProgress {
+  /** Index of the piece we're currently synthesizing (1-based for display). */
+  piece: number;
+  /** Total pieces this sentence is split into. */
+  total: number;
+}
+
 /** Synthesize one sentence; persists the result to IndexedDB. */
 export async function synthesize(
   bookId: string,
   chapterId: string,
   sentenceIdx: number,
   text: string,
-  voice: string
+  voice: string,
+  options: { onProgress?: (p: SynthProgress) => void } = {}
 ): Promise<AudioChunkRow> {
   if (!_instance) {
     throw new Error("Kokoro is not loaded. Call loadKokoro() first.");
@@ -219,12 +230,16 @@ export async function synthesize(
       ? [trimmed]
       : enforceMaxLength([trimmed], SYNTH_CHUNK_CHAR_LIMIT);
 
-  // Synthesize each piece sequentially. Sequential matters: ORT WASM
-  // sessions aren't safe to run concurrently, and on mobile we'd OOM.
   const buffers: Float32Array[] = [];
   let sampleRate = 24000;
-  for (const piece of pieces) {
-    const result = await _instance.generate(piece, { voice, speed: 1.0 });
+  for (let i = 0; i < pieces.length; i++) {
+    options.onProgress?.({ piece: i + 1, total: pieces.length });
+    const piece = pieces[i];
+    const result = await withTimeout(
+      _instance.generate(piece, { voice, speed: 1.0 }),
+      SYNTH_PIECE_TIMEOUT_MS,
+      `Speech synthesis stalled on a ${piece.length}-char chunk after ${SYNTH_PIECE_TIMEOUT_MS / 1000}s.`
+    );
     buffers.push(result.audio);
     sampleRate = result.sampling_rate;
   }
@@ -249,6 +264,31 @@ export async function synthesize(
   };
   await putAudio(row);
   return row;
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      reject(new Error(message));
+    }, ms);
+    p.then(
+      (v) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
 }
 
 /* ----------------------------- helpers ------------------------------- */

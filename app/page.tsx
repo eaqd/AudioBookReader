@@ -1,5 +1,6 @@
 import { Library } from "@/components/Library";
 import { PdfUploader } from "@/components/PdfUploader";
+import { ResetButton } from "@/components/ResetButton";
 
 export default function HomePage() {
   return (
@@ -12,6 +13,7 @@ export default function HomePage() {
             <p className="text-xs text-muted">Your PDFs, narrated.</p>
           </div>
         </div>
+        <ResetButton />
       </header>
 
       <section className="flex-1 px-4 sm:px-8 pb-12 max-w-5xl w-full mx-auto pt-2 space-y-10">

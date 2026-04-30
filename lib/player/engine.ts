@@ -11,7 +11,7 @@
  */
 
 import { getAudio } from "@/lib/storage/audio";
-import { synthesize } from "@/lib/tts/kokoro";
+import { synthesize, type SynthProgress } from "@/lib/tts/kokoro";
 
 export interface SentenceRef {
   /** Global index in the book (0..total-1). */
@@ -33,6 +33,10 @@ export interface EngineState {
   durationSec: number;
   /** True while a sentence is being synthesized in foreground. */
   generating: boolean;
+  /** Sub-chunk progress when the foreground synth is running. */
+  synthProgress: SynthProgress | null;
+  /** Surfaced when synth fails (timeout, model error, etc). */
+  lastError: string | null;
 }
 
 export type EngineListener = (s: EngineState) => void;
@@ -61,6 +65,8 @@ export class PlayerEngine {
 
   private rafId: number | null = null;
   private generating = new Set<number>();
+  private foregroundSynth: { idx: number; progress: SynthProgress | null } | null = null;
+  private lastError: string | null = null;
 
   constructor(config: EngineConfig) {
     this.cfg = {
@@ -117,8 +123,15 @@ export class PlayerEngine {
       rate: this.rate,
       positionSec: this.active.currentTime || 0,
       durationSec: Number.isFinite(this.active.duration) ? this.active.duration : 0,
-      generating: this.generating.size > 0
+      generating: this.generating.size > 0,
+      synthProgress: this.foregroundSynth?.progress ?? null,
+      lastError: this.lastError
     };
+  }
+
+  clearError() {
+    this.lastError = null;
+    this.emit();
   }
 
   subscribe(fn: EngineListener): () => void {
@@ -354,14 +367,15 @@ export class PlayerEngine {
 
   private async generateAndCache(ref: SentenceRef) {
     if (this.generating.has(ref.globalIdx)) {
-      // wait until done
       while (this.generating.has(ref.globalIdx)) {
         await sleep(50);
       }
-      const row = await getAudio(this.cfg.bookId, ref.chapterId, ref.sentenceIdx);
-      if (row) return row;
+      const existing = await getAudio(this.cfg.bookId, ref.chapterId, ref.sentenceIdx);
+      if (existing) return existing;
     }
     this.generating.add(ref.globalIdx);
+    const isForeground = ref.globalIdx === this.currentIdx;
+    if (isForeground) this.foregroundSynth = { idx: ref.globalIdx, progress: null };
     this.emit();
     try {
       const row = await synthesize(
@@ -369,11 +383,25 @@ export class PlayerEngine {
         ref.chapterId,
         ref.sentenceIdx,
         ref.text,
-        this.cfg.voice
+        this.cfg.voice,
+        {
+          onProgress: (p) => {
+            if (isForeground) {
+              this.foregroundSynth = { idx: ref.globalIdx, progress: p };
+              this.emit();
+            }
+          }
+        }
       );
+      this.lastError = null;
       return row;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.lastError = msg;
+      throw e;
     } finally {
       this.generating.delete(ref.globalIdx);
+      if (isForeground) this.foregroundSynth = null;
       this.emit();
     }
   }

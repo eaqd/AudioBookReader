@@ -347,6 +347,9 @@ export function Reader({ bookId }: ReaderProps) {
         onOpenToc={() => setTocOpen(true)}
         onSleep={onSleep}
         sleepRemainingMs={sleepRemainingMs}
+        synthProgress={engineState.synthProgress}
+        lastError={engineState.lastError}
+        onClearError={() => engineRef.current?.clearError()}
       />
 
       <SectionNav
