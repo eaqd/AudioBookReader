@@ -26,5 +26,13 @@ Thumbs.db
 # Vercel
 .vercel/
 
-# Copied at postinstall by scripts/copy-pdf-worker.mjs
+# Generated at postinstall by scripts/copy-pdf-worker.mjs
 public/pdf.worker.min.mjs
+
+# Generated at postinstall by scripts/make-icons.mjs
+public/icons/
+
+# Generated at build by Serwist
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js

@@ -1,9 +1,18 @@
+import withSerwistInit from "@serwist/next";
+
+const isDev = process.env.NODE_ENV === "development";
+
+const withSerwist = withSerwistInit({
+  swSrc: "app/sw.ts",
+  swDest: "public/sw.js",
+  cacheOnNavigation: true,
+  reloadOnOnline: true,
+  disable: isDev
+});
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // pdfjs-dist ships ESM with optional Node fallbacks.
-  // No special webpack config needed for client-side use; pages that import
-  // pdfjs are already client components.
   reactStrictMode: true
 };
 
-export default nextConfig;
+export default withSerwist(nextConfig);

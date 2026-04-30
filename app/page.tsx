@@ -1,3 +1,4 @@
+import { Library } from "@/components/Library";
 import { PdfUploader } from "@/components/PdfUploader";
 
 export default function HomePage() {
@@ -11,21 +12,21 @@ export default function HomePage() {
             <p className="text-xs text-muted">Your PDFs, narrated.</p>
           </div>
         </div>
-        <span className="text-[10px] uppercase tracking-[0.18em] text-subtle">
-          Step 1 — Extract
-        </span>
       </header>
 
-      <section className="flex-1 px-4 sm:px-8 pt-4 pb-10 max-w-3xl w-full mx-auto">
-        <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mt-2 mb-1">
-          Add a book
-        </h2>
-        <p className="text-sm text-muted mb-6">
-          Drop in any text-based PDF. We&rsquo;ll detect chapters and split sentences so the
-          audiobook can sync to the page later.
-        </p>
+      <section className="flex-1 px-4 sm:px-8 pb-12 max-w-5xl w-full mx-auto pt-2 space-y-10">
+        <div>
+          <h2 className="text-3xl sm:text-4xl font-bold tracking-tight mt-2 mb-1">
+            Add a book
+          </h2>
+          <p className="text-sm text-muted mb-5">
+            Drop in any text-based PDF. We&rsquo;ll detect chapters and split sentences,
+            then read it aloud in a natural voice.
+          </p>
+          <PdfUploader />
+        </div>
 
-        <PdfUploader />
+        <Library />
       </section>
     </main>
   );
@@ -34,7 +35,6 @@ export default function HomePage() {
 function Logo() {
   return (
     <div className="h-9 w-9 rounded-full grid place-items-center bg-accent text-black shadow-card">
-      {/* simple "headphones" mark */}
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <path d="M3 12a9 9 0 0 1 18 0v6" />
