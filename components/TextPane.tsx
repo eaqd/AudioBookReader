@@ -1,51 +1,74 @@
 "use client";
 
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import type { ChapterPayload } from "@/lib/storage/db";
 
 export interface TextPaneProps {
   chapters: ChapterPayload[];
-  /** Pairs (chapterIdx, sentenceIdx) for currently active sentence. */
   activeChapterIdx: number;
   activeSentenceIdx: number;
-  onSeekTo: (chapterIdx: number, sentenceIdx: number) => void;
-  /** Auto-scroll to the active sentence. */
+  /** Word being spoken inside the active sentence, or -1. */
+  activeWordIdx: number;
+  /** Seek to a sentence, optionally to a word inside it. */
+  onSeekTo: (chapterIdx: number, sentenceIdx: number, wordIdx?: number) => void;
   follow: boolean;
   onUserScroll: () => void;
+  /** 0.85 - 1.5, user text-size preference. */
+  fontScale: number;
 }
 
+/**
+ * Only the active chapter is rendered.
+ *
+ * A full book is far too much DOM: the 482-page book under test produced
+ * 6,618 sentences, and rendering every one (plus per-word spans) makes
+ * scrolling and highlighting stutter badly on a phone. A chapter is a
+ * natural reading unit and keeps the tree to a few hundred nodes.
+ *
+ * Per-word spans exist only inside the sentence currently being spoken —
+ * that is the only place word-level highlighting is visible, and it keeps
+ * the cost proportional to one sentence rather than the whole chapter.
+ */
 export const TextPane = memo(function TextPane({
   chapters,
   activeChapterIdx,
   activeSentenceIdx,
+  activeWordIdx,
   onSeekTo,
   follow,
-  onUserScroll
+  onUserScroll,
+  fontScale
 }: TextPaneProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const programmaticScroll = useRef(false);
+  const programmatic = useRef(false);
 
-  // auto-scroll to active sentence when follow is true
+  const chapter = chapters[activeChapterIdx];
+
+  // Keep the spoken word centred while following.
   useEffect(() => {
     if (!follow) return;
-    const sel = `[data-cidx="${activeChapterIdx}"][data-sidx="${activeSentenceIdx}"]`;
-    const el = scrollRef.current?.querySelector(sel) as HTMLElement | null;
-    if (el) {
-      programmaticScroll.current = true;
-      el.scrollIntoView({ block: "center", behavior: "smooth" });
-      // clear flag after the smooth scroll settles
-      window.setTimeout(() => {
-        programmaticScroll.current = false;
-      }, 500);
-    }
-  }, [follow, activeChapterIdx, activeSentenceIdx]);
+    const root = scrollRef.current;
+    if (!root) return;
+    const word = root.querySelector(`[data-widx="${activeWordIdx}"]`) as HTMLElement | null;
+    const sentence = root.querySelector(
+      `[data-sidx="${activeSentenceIdx}"]`
+    ) as HTMLElement | null;
+    const target = word ?? sentence;
+    if (!target) return;
+    programmatic.current = true;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    const t = window.setTimeout(() => {
+      programmatic.current = false;
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [follow, activeSentenceIdx, activeWordIdx, activeChapterIdx]);
 
-  // detect user-initiated scroll → break follow
+  // Manual scroll breaks follow mode.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const onScroll = () => {
-      if (programmaticScroll.current) return;
+      if (programmatic.current) return;
       onUserScroll();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
@@ -53,73 +76,142 @@ export const TextPane = memo(function TextPane({
   }, [onUserScroll]);
 
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
-    const target = (e.target as HTMLElement).closest("[data-sidx]") as HTMLElement | null;
-    if (!target) return;
-    const cidx = parseInt(target.dataset.cidx ?? "", 10);
-    const sidx = parseInt(target.dataset.sidx ?? "", 10);
-    if (Number.isFinite(cidx) && Number.isFinite(sidx)) onSeekTo(cidx, sidx);
+    const el = e.target as HTMLElement;
+    const wordEl = el.closest("[data-widx]") as HTMLElement | null;
+    const sentEl = el.closest("[data-sidx]") as HTMLElement | null;
+    if (!sentEl) return;
+    const sidx = Number.parseInt(sentEl.dataset.sidx ?? "", 10);
+    if (!Number.isFinite(sidx)) return;
+    const widx = wordEl ? Number.parseInt(wordEl.dataset.widx ?? "", 10) : undefined;
+    onSeekTo(activeChapterIdx, sidx, Number.isFinite(widx as number) ? widx : undefined);
+  }
+
+  if (!chapter) {
+    return <div className="flex-1 grid place-items-center text-muted text-sm">No chapter</div>;
   }
 
   return (
     <div
       ref={scrollRef}
       onClick={handleClick}
-      className="flex-1 overflow-y-auto no-scrollbar px-5 sm:px-8 reader-text"
+      className="flex-1 overflow-y-auto no-scrollbar px-5 sm:px-8"
     >
-      <div className="max-w-2xl mx-auto py-6 space-y-7">
-        {chapters.map((chapter, cidx) => (
-          <ChapterBlock
-            key={chapter.id}
-            chapter={chapter}
-            cidx={cidx}
-            activeCidx={activeChapterIdx}
-            activeSidx={activeSentenceIdx}
-          />
-        ))}
-        <div className="h-32" /> {/* bottom spacer above PlayerBar */}
+      <div className="max-w-[38rem] mx-auto py-6">
+        <header className="mb-6">
+          <p className="text-[10px] uppercase tracking-[0.2em] text-subtle">
+            Chapter {activeChapterIdx + 1} of {chapters.length}
+          </p>
+          <h2 className="mt-1 text-2xl font-bold tracking-tight leading-snug">
+            {chapter.title}
+          </h2>
+          <p className="mt-1 text-xs text-muted">
+            page {chapter.startPage} &middot; {chapter.sentences.length} sentences
+          </p>
+        </header>
+
+        <div
+          className="reader-body text-text/90"
+          style={{ fontSize: `${fontScale}rem` }}
+        >
+          {chapter.sentences.map((s, i) => (
+            <Sentence
+              key={i}
+              text={s}
+              sidx={i}
+              isActive={i === activeSentenceIdx}
+              activeWordIdx={activeWordIdx}
+            />
+          ))}
+        </div>
+
+        <div className="h-40" />
       </div>
     </div>
   );
 });
 
-interface BlockProps {
-  chapter: ChapterPayload;
-  cidx: number;
-  activeCidx: number;
-  activeSidx: number;
-}
-
-const ChapterBlock = memo(function ChapterBlock({
-  chapter, cidx, activeCidx, activeSidx
-}: BlockProps) {
+const Sentence = memo(function Sentence({
+  text,
+  sidx,
+  isActive,
+  activeWordIdx
+}: {
+  text: string;
+  sidx: number;
+  isActive: boolean;
+  activeWordIdx: number;
+}) {
+  // Inactive sentences stay a single node — cheap, and nothing inside
+  // them needs individual addressing.
+  if (!isActive) {
+    return (
+      <span
+        data-sidx={sidx}
+        className="sentence cursor-pointer rounded px-0.5 hover:bg-white/5"
+      >
+        {text}{" "}
+      </span>
+    );
+  }
   return (
-    <section data-chapter={chapter.id}>
-      <h2 className="text-xl font-bold tracking-tight mb-2 text-text/90">
-        {chapter.title}
-      </h2>
-      <p className="text-[11px] uppercase tracking-[0.18em] text-subtle mb-4">
-        starts on page {chapter.startPage} · {chapter.sentences.length} sentences
-      </p>
-      <div className="leading-[1.85] text-[1.02rem] text-text/85 space-y-1">
-        {chapter.sentences.map((s, i) => {
-          const isActive = cidx === activeCidx && i === activeSidx;
-          return (
-            <span
-              key={i}
-              data-cidx={cidx}
-              data-sidx={i}
-              className={
-                "inline cursor-pointer rounded px-0.5 transition " +
-                (isActive
-                  ? "bg-accent/20 shadow-[inset_3px_0_0_0_var(--tw-shadow-color)] shadow-accent"
-                  : "hover:bg-white/5")
-              }
-            >
-              {s}{" "}
-            </span>
-          );
-        })}
-      </div>
-    </section>
+    <span data-sidx={sidx} className="sentence sentence-active rounded px-0.5">
+      <Words text={text} activeWordIdx={activeWordIdx} />{" "}
+    </span>
   );
 });
+
+const Words = memo(function Words({
+  text,
+  activeWordIdx
+}: {
+  text: string;
+  activeWordIdx: number;
+}) {
+  const parts = useMemo(() => splitKeepingGaps(text), [text]);
+  let wordCounter = -1;
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (!p.isWord) return <span key={i}>{p.text}</span>;
+        wordCounter += 1;
+        const idx = wordCounter;
+        return (
+          <span
+            key={i}
+            data-widx={idx}
+            className={"word" + (idx === activeWordIdx ? " word-active" : "")}
+          >
+            {p.text}
+          </span>
+        );
+      })}
+    </>
+  );
+});
+
+/** Split into words and the whitespace between them, preserving both. */
+function splitKeepingGaps(text: string): { text: string; isWord: boolean }[] {
+  const out: { text: string; isWord: boolean }[] = [];
+  const re = /\S+/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index), isWord: false });
+    out.push({ text: m[0], isWord: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), isWord: false });
+  return out;
+}
+
+/** Character offset where a given word starts — for tap-to-seek. */
+export function charIndexOfWord(text: string, wordIdx: number): number {
+  const re = /\S+/g;
+  let i = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    i += 1;
+    if (i === wordIdx) return m.index;
+  }
+  return 0;
+}

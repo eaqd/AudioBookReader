@@ -20,23 +20,82 @@ body {
   letter-spacing: -0.01em;
 }
 
-/* hide scrollbars on small mobile while keeping function */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
 
-/* iPhone safe areas */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 .safe-top    { padding-top: env(safe-area-inset-top); }
 
-/* Spotify-style focus ring on the upload card */
 .upload-card {
-  background:
-    linear-gradient(180deg, #1c1c1c 0%, #131313 100%);
+  background: linear-gradient(180deg, #1c1c1c 0%, #131313 100%);
   border: 1px solid rgba(255,255,255,0.06);
 }
 .upload-card:hover { border-color: rgba(255,255,255,0.16); }
 .upload-card.is-drag {
   border-color: #1DB954;
-  background:
-    linear-gradient(180deg, #173b27 0%, #0f1d15 100%);
+  background: linear-gradient(180deg, #173b27 0%, #0f1d15 100%);
+}
+
+/* ---------------------------------------------------------------
+   Reading surface
+
+   Tuned for sustained reading rather than UI density: a generous
+   measure, loose leading, and a serif-free stack that stays legible
+   at small sizes on a phone. Letter-spacing is reset to normal here
+   because the tightened global tracking hurts long-form text.
+   --------------------------------------------------------------- */
+.reader-body {
+  line-height: 1.85;
+  letter-spacing: normal;
+  word-spacing: 0.02em;
+  text-align: left;
+  hyphens: none;
+}
+
+.sentence {
+  transition: background-color 140ms ease;
+}
+
+/* The sentence being read: a calm bed that never competes with the
+   word cursor sitting inside it. */
+.sentence-active {
+  background-color: rgba(29, 185, 84, 0.10);
+  box-shadow: inset 2px 0 0 0 rgba(29, 185, 84, 0.55);
+}
+
+/* The word cursor. This is the speed-reading anchor, so it has to be
+   findable in peripheral vision without strobing on every word. */
+.word {
+  border-radius: 3px;
+  padding: 0 1px;
+  transition: background-color 90ms linear, color 90ms linear;
+}
+.word-active {
+  background-color: #1DB954;
+  color: #05130a;
+  font-weight: 600;
+}
+
+/* Respect users who get motion sick from the moving highlight. */
+@media (prefers-reduced-motion: reduce) {
+  .sentence, .word { transition: none; }
+  html { scroll-behavior: auto; }
+}
+
+input[type="range"].scrubber {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: rgba(127, 127, 127, 0.3);
+  border-radius: 999px;
+  outline: none;
+}
+input[type="range"].scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 999px;
+  background: #1DB954;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }

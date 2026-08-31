@@ -56,6 +56,9 @@ export interface ProgressRow {
   sentenceIdx: number;
   /** Offset within the active sentence (seconds). */
   offsetSec: number;
+  /** Character offset within the active sentence, for word-accurate
+   *  resume. Optional so rows written by older builds still load. */
+  charIndex?: number;
   updatedAt: number;
 }
 

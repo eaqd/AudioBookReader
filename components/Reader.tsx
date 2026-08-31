@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TextPane } from "./TextPane";
+import { TextPane, charIndexOfWord } from "./TextPane";
+import { ScreenLock } from "./ScreenLock";
 import { PlayerBar } from "./PlayerBar";
 import { SectionNav } from "./SectionNav";
 import { CoverArt } from "./CoverArt";
@@ -44,6 +45,8 @@ export function Reader({ bookId }: ReaderProps) {
   const [tocOpen, setTocOpen] = useState(false);
   const [follow, setFollow] = useState(true);
   const [sleepRemainingMs, setSleepRemainingMs] = useState<number | null>(null);
+  const [locked, setLocked] = useState(false);
+  const [fontScale, setFontScale] = useState(1.05);
   const sleepTimerRef = useRef<{ until: number; id: number; endOfChapter: boolean } | null>(null);
 
   const engineRef = useRef<PlayerEngine | null>(null);
@@ -110,7 +113,8 @@ export function Reader({ bookId }: ReaderProps) {
           bookId: loaded.book.id,
           chapterId: s.current.chapterId,
           sentenceIdx: s.current.sentenceIdx,
-          offsetSec: s.positionSec
+          offsetSec: s.positionSec,
+          charIndex: s.charIndex
         });
       }
     });
@@ -126,7 +130,13 @@ export function Reader({ bookId }: ReaderProps) {
       const idx = startIdx >= 0 ? startIdx : 0;
       // We can't autoplay before user gesture; just position the engine.
       await eng.seekToSentence(idx, false);
-      if (p?.offsetSec) eng.seekWithinSentence(p.offsetSec);
+      // Prefer the exact character we stopped on; fall back to the older
+      // seconds-based field for rows written before charIndex existed.
+      if (typeof p?.charIndex === "number" && p.charIndex > 0) {
+        await eng.seekToSentenceChar(idx, p.charIndex, false);
+      } else if (p?.offsetSec) {
+        eng.seekWithinSentence(p.offsetSec);
+      }
     })();
 
     return () => {
@@ -205,7 +215,7 @@ export function Reader({ bookId }: ReaderProps) {
   }, [ensureModelLoaded]);
 
   const onSeekTextSentence = useCallback(
-    async (chapterIdx: number, sentenceIdx: number) => {
+    async (chapterIdx: number, sentenceIdx: number, wordIdx?: number) => {
       if (!loaded || !engineRef.current) return;
       // Same iOS-unlock dance as togglePlay.
       engineRef.current.prime();
@@ -215,7 +225,12 @@ export function Reader({ bookId }: ReaderProps) {
         (s) => s.chapterIdx === chapterIdx && s.sentenceIdx === sentenceIdx
       );
       if (!target) return;
-      await engineRef.current.seekToSentence(target.globalIdx, true);
+      if (typeof wordIdx === "number" && wordIdx > 0) {
+        const ci = charIndexOfWord(target.text, wordIdx);
+        await engineRef.current.seekToSentenceChar(target.globalIdx, ci, true);
+      } else {
+        await engineRef.current.seekToSentence(target.globalIdx, true);
+      }
     },
     [loaded, ensureModelLoaded]
   );
@@ -308,6 +323,20 @@ export function Reader({ bookId }: ReaderProps) {
           </div>
         </div>
         <button
+          onClick={() => setFontScale((f) => (f >= 1.35 ? 0.9 : +(f + 0.15).toFixed(2)))}
+          aria-label="Text size"
+          className="shrink-0 text-xs px-2 py-1 rounded-md bg-cardHover text-muted hover:text-text"
+        >
+          A{fontScale >= 1.2 ? "+" : fontScale <= 0.95 ? "-" : ""}
+        </button>
+        <button
+          onClick={() => setLocked(true)}
+          aria-label="Lock screen"
+          className="shrink-0 text-xs px-2 py-1 rounded-md bg-cardHover text-muted hover:text-text"
+        >
+          Lock
+        </button>
+        <button
           onClick={() => setFollow((v) => !v)}
           className={
             "shrink-0 text-xs px-2 py-1 rounded-md " +
@@ -328,8 +357,10 @@ export function Reader({ bookId }: ReaderProps) {
         chapters={loaded.content.chapters}
         activeChapterIdx={chapterIdx}
         activeSentenceIdx={sentenceIdx}
+        activeWordIdx={engineState.wordIdx}
         onSeekTo={onSeekTextSentence}
         follow={follow}
+        fontScale={fontScale}
         onUserScroll={() => {
           lastUserScrollRef.current = Date.now();
           if (follow) setFollow(false);
@@ -371,6 +402,16 @@ export function Reader({ bookId }: ReaderProps) {
         lastError={engineState.lastError}
         onClearError={() => engineRef.current?.clearError()}
       />
+
+      {locked && (
+        <ScreenLock
+          bookTitle={loaded.book.title}
+          chapterTitle={loaded.content.chapters[chapterIdx]?.title ?? ""}
+          playing={engineState.playing}
+          onUnlock={() => setLocked(false)}
+          onTogglePlay={togglePlay}
+        />
+      )}
 
       <SectionNav
         open={tocOpen}

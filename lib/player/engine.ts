@@ -72,6 +72,11 @@ export class PlayerEngine {
   private lastError: string | null = null;
   private stopKeepAlive: (() => void) | null = null;
   private tickId: number | null = null;
+  private watchdogId: number | null = null;
+  private lastProgressAt = 0;
+  /** Set once a real boundary event arrives; the timer estimate then
+   *  stops competing with it. */
+  private sawBoundary = false;
   private startedAt = 0;
 
   constructor(config: EngineConfig) {
@@ -168,6 +173,24 @@ export class PlayerEngine {
     this.baseChar = 0;
     if (autoplay) this.speakCurrent(0);
     this.emit();
+  }
+
+  /** Jump to an exact character offset inside a given sentence. */
+  async seekToSentenceChar(globalIdx: number, charIndex: number, autoplay = true): Promise<void> {
+    const ref = this.sentences[globalIdx];
+    if (!ref) return;
+    this.stopSpeaking();
+    this.currentIdx = globalIdx;
+    const target = Math.max(0, Math.min(ref.text.length, charIndex));
+    this.charIndex = target;
+    this.baseChar = target;
+    if (autoplay) this.speakCurrent(target);
+    this.emit();
+  }
+
+  /** Current character offset, for word-accurate progress persistence. */
+  getCharIndex(): number {
+    return this.charIndex;
   }
 
   seekWithinSentence(sec: number) {
@@ -285,13 +308,17 @@ export class PlayerEngine {
     this.startedAt = Date.now();
     this.stopKeepAlive?.();
     this.stopKeepAlive = startKeepAlive();
+    this.lastProgressAt = Date.now();
     this.startTicker();
+    this.startWatchdog();
 
     this.handle = speak(text, {
       voiceId: this.voiceId,
       rate: this.rate,
       onBoundary: (ci) => {
+        this.sawBoundary = true;
         this.charIndex = this.baseChar + ci;
+        this.lastProgressAt = Date.now();
         this.emit();
       },
       onEnd: () => {
@@ -328,6 +355,42 @@ export class PlayerEngine {
     this.stopKeepAlive?.();
     this.stopKeepAlive = null;
     this.stopTicker();
+    this.stopWatchdog();
+  }
+
+  /**
+   * Speech engines drop utterances silently: Chrome stops after ~15s of
+   * continuous speech, iOS kills the queue when the tab is backgrounded,
+   * and some voices simply never fire onend. Without this, playback just
+   * stops and the UI keeps claiming it is playing. The watchdog notices
+   * that nothing is speaking while we believe we are playing, and
+   * restarts the current sentence from the last known character.
+   */
+  private startWatchdog() {
+    if (this.watchdogId != null) return;
+    this.watchdogId = window.setInterval(() => {
+      if (!this.playing) return;
+      if (typeof window === "undefined" || !window.speechSynthesis) return;
+      const s = window.speechSynthesis;
+      const idle = !s.speaking && !s.pending;
+      const stalledFor = Date.now() - this.lastProgressAt;
+      const limit = this.sawBoundary ? 2500 : 1500;
+      if (idle && stalledFor > limit) {
+        // Resume from where we got to rather than restarting the sentence.
+        const resumeAt = this.charIndex;
+        this.handle?.cancel();
+        this.handle = null;
+        this.lastProgressAt = Date.now();
+        this.speakCurrent(resumeAt);
+      }
+    }, 1000);
+  }
+
+  private stopWatchdog() {
+    if (this.watchdogId != null) {
+      clearInterval(this.watchdogId);
+      this.watchdogId = null;
+    }
   }
 
   /**
@@ -338,6 +401,8 @@ export class PlayerEngine {
     if (this.tickId != null) return;
     this.tickId = window.setInterval(() => {
       if (!this.playing) return;
+      // Real boundary events win; never second-guess them.
+      if (this.sawBoundary) return;
       const cur = this.sentences[this.currentIdx];
       if (!cur) return;
       const elapsed = (Date.now() - this.startedAt) / 1000;
