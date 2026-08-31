@@ -28,36 +28,8 @@ const serwist = new Serwist({
   clientsClaim: false,
   navigationPreload: true,
   runtimeCaching: [
-    // Hugging Face: Kokoro model files. Big, immutable — perfect for
-    // CacheFirst. Only cache complete 200 responses; iOS sometimes aborts
-    // a fetch mid-stream and we don't want a partial body sitting around.
-    {
-      matcher: ({ url }) =>
-        url.host.includes("huggingface.co") || url.host.includes("hf.co"),
-      handler: new CacheFirst({
-        cacheName: "kokoro-model-v1",
-        plugins: [
-          new CacheableResponsePlugin({ statuses: [200] }),
-          new ExpirationPlugin({
-            maxEntries: 200,
-            maxAgeSeconds: 60 * 60 * 24 * 365 // 1 year
-          })
-        ]
-      })
-    },
-    // jsDelivr / esm.sh ESM bundles (kokoro-js, transformers.js,
-    // onnxruntime-web). Same partial-response concern.
-    {
-      matcher: ({ url }) =>
-        url.host.includes("cdn.jsdelivr.net") || url.host.includes("esm.sh"),
-      handler: new CacheFirst({
-        cacheName: "esm-cdn-v1",
-        plugins: [
-          new CacheableResponsePlugin({ statuses: [200] }),
-          new ExpirationPlugin({ maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 30 })
-        ]
-      })
-    },
+    // Speech now comes from the device, so there is no model or CDN
+    // bundle left to cache. Only the pdf.js worker is worth holding.
     // pdfjs worker: large + immutable.
     {
       matcher: ({ url }) => url.pathname === "/pdf.worker.min.mjs",

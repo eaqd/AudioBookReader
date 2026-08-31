@@ -1,95 +1,96 @@
 # PDF Audiobook Reader
 
-Fully client-side PWA: uploads a PDF, generates a Spotify-style audiobook with
-synchronized text using browser-native TTS (Kokoro-82M via `kokoro-js`),
-deployable to Vercel free tier and installable on iPhone via Add to Home Screen.
+Fully client-side PWA: upload a PDF, get a Spotify-style audiobook with
+synchronized text, tap-to-seek, and resumable progress. Deploys to Vercel
+free tier and installs on iPhone via Add to Home Screen.
 
-**No backend. No paid APIs. No server-side TTS.**
+**No backend. No paid APIs. No model downloads.**
 
 ## Stack
 
-| Layer        | Choice                                                         |
-| ------------ | -------------------------------------------------------------- |
-| Framework    | Next.js 14 App Router + TypeScript                             |
-| Styling      | Tailwind CSS                                                   |
-| PDF parsing  | `pdfjs-dist` (worker hosted from `public/`)                    |
-| TTS          | `kokoro-js` (browser ONNX, WebGPU → WASM fallback) — Step 3    |
-| Storage      | IndexedDB via `idb` — Step 4                                   |
-| Audio        | `HTMLAudioElement` + Media Session API — Step 7                |
-| PWA          | manifest + service worker — Step 9                             |
+| Layer       | Choice                                              |
+| ----------- | --------------------------------------------------- |
+| Framework   | Next.js 14 App Router + TypeScript                  |
+| Styling     | Tailwind CSS                                        |
+| PDF parsing | `pdfjs-dist` (worker served from `public/`)         |
+| Speech      | **Web Speech API** — the device's own voices        |
+| Storage     | IndexedDB via `idb`                                 |
+| PWA         | `@serwist/next` service worker                      |
 
-## Build phases (gated on user verification)
+## Why the device voice, not Kokoro
 
-The full build is split into 9 incremental steps. Each step ends with a
-verifiable demo and gets its own commit. Don't proceed past a step until
-it works.
+The first implementation ran Kokoro-82M in-browser via ONNX. It worked,
+but was far too slow to be usable. Measured in desktop Chrome (WASM):
 
-1. **Skeleton + PDF upload + text extraction** — *current step*. Drop a PDF,
-   see structured chapter+sentence JSON in the browser console.
-2. Sectioning + sentence splitting validated on three PDFs (TOC, no-TOC, scanned-error).
-3. `kokoro-js` integration: load model with progress UI, generate one sentence, play via `<audio>`.
-4. IndexedDB cache via `idb`: store/retrieve audio Blob URLs keyed `bookId:chapterId:sentenceIndex`.
-5. Sentence-ahead buffer queue (3–5 ahead, `requestIdleCallback` with `setTimeout(0)` fallback).
-6. Reader UI: two-pane, sentence highlighting, follow-mode autoscroll, tap-to-seek.
-7. PlayerBar: ±15s, prev/next sentence, prev/next chapter, speed picker, sleep timer, MediaSession.
-8. Library + progress: home screen with cover thumbnails, "Continue listening" card.
-9. PWA polish: manifest, service worker (next-pwa) caching app shell + Kokoro ONNX, iOS meta. Deploy to Vercel.
+```
+3.73 s of audio generated in 17.2 s  →  4.6x slower than realtime
+```
 
-## Run locally (Step 1)
+Playback can never keep up with generation at that rate, and a phone is
+several times slower again — which is why the reader used to sit on
+"generating…" indefinitely. It was never a crash; the synthesizer was
+working, just impossibly slowly.
+
+The device's built-in voices speak instantly, cost nothing, need no
+80 MB download, and modern iOS/Android neural voices sound good.
+
+**Known tradeoff:** Web Speech is bound to the page, so audio stops when
+an iOS screen locks. Lock-screen playback is not achievable with this
+API. If background listening becomes a requirement, it needs
+pre-rendered audio files (and therefore a server).
+
+## Run locally
 
 ```bash
-npm install            # postinstall copies pdfjs worker into public/
-npm run dev            # http://localhost:3000
+npm install          # postinstall copies the pdf.js worker + builds icons
+npm run dev          # http://localhost:3000
+npm run typecheck
+npm run build
 ```
 
-Drop any PDF on the upload zone. Open DevTools → Console. You should see:
-
-```
-[PdfUploader] extracted book: { title, pageCount, chapters: [...] }
-[PdfUploader] JSON: <pretty-printed full structure>
-```
-
-The page shows a summary card with chapter count, sentence count, detection
-mode (`outline` | `heading` | `wordSplit`), and the first 12 chapter titles.
-
-### Verify the three sectioning tiers
-
-- **TOC tier** — drop a PDF that has bookmarks. Detection mode should be `outline`.
-- **Heading tier** — drop a PDF without bookmarks but with visually large
-  headings. Detection mode should be `heading`.
-- **Scanned PDF** — drop a scanned/image-only PDF. The UI shows a friendly
-  error: "This PDF appears to be scanned images. OCR is not supported in v1."
-
-Type-check:
+## Tests
 
 ```bash
-npx tsc --noEmit
+npx tsx tests/word-integrity.mts    # PDF text-extraction regression suite
+node tests/make-test-pdf.mjs out.pdf # generate a fixture PDF
 ```
+
+`word-integrity.mts` guards the text pipeline against the ways PDF text
+extraction breaks words apart. It covers:
+
+- hyphenated words rejoining across a line wrap
+- sentences surviving a font-size shift mid-sentence (bold / italic runs)
+- adjacent style runs keeping their word spacing
+- the sentence-length cap only ever cutting at whitespace
+- no spurious period inserted mid-title
+
+## Text pipeline notes
+
+`lib/pdf/` turns a PDF into chapters of sentences. Three subtleties that
+previously produced visibly broken words:
+
+1. **pdf.js emits a new text run at every style change**, and the space
+   between two words is often a coordinate jump rather than a space
+   glyph. `joinRuns` restores those spaces using each run's advance
+   width.
+2. **A single bold word must not redefine a line's font size.**
+   `dominantFontSize` weights by character count so one emphasised word
+   cannot make the next normal line look like a new paragraph.
+3. **Book text hyphenates at the right margin.** `joinWrappedLines`
+   rejoins `hyphen-` + `ated` into `hyphenated` instead of gluing them
+   with a space.
+
+Chapter detection is three-tier: PDF outline (>= 3 entries), else a
+heading heuristic on font size, else a 3000-word split.
 
 ## Layout
 
 ```
-app/
-  layout.tsx             PWA meta + iOS Add-to-Home-Screen tags
-  page.tsx               Step 1 home — PDF uploader
-  globals.css            Tailwind base
-components/
-  PdfUploader.tsx        Drag-and-drop + extract → sectioning → console.log
-lib/
-  pdf/
-    extract.ts           pdfjs-dist text extraction with outline + scanned detect
-    sentences.ts         Intl.Segmenter with regex + abbreviation-aware fallback
-    sectioning.ts        Three-tier chapter detection
-public/
-  pdf.worker.min.mjs     Copied at postinstall by scripts/copy-pdf-worker.mjs
-scripts/
-  copy-pdf-worker.mjs    Postinstall hook
-```
-
-## Vercel deploy (later)
-
-When Step 9 lands:
-
-```bash
-vercel --prod   # no env vars needed
+app/            routes, PWA manifest, service worker
+components/     Library, Reader, TextPane, PlayerBar, SectionNav
+lib/pdf/        extract -> sectioning -> sentences
+lib/tts/        speech.ts  (Web Speech wrapper: voices, speak, prime)
+lib/player/     engine.ts  (sentence sequencing, position estimation)
+lib/storage/    idb schema, books, progress
+tests/          extraction regression suite + PDF fixture generator
 ```

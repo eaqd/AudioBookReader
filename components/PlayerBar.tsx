@@ -28,6 +28,9 @@ export interface PlayerBarProps {
   synthProgress: { piece: number; total: number } | null;
   lastError: string | null;
   onClearError: () => void;
+  voices: { id: string; name: string; lang: string }[];
+  voiceId: string | null;
+  onChangeVoice: (id: string) => void;
 }
 
 const RATES = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
@@ -70,6 +73,7 @@ export function PlayerBar(p: PlayerBarProps) {
         <div className="flex items-center justify-between mt-3">
           <div className="flex items-center gap-2">
             <RateButton rate={p.rate} onChange={p.onChangeRate} />
+            <VoiceButton voices={p.voices} voiceId={p.voiceId} onChange={p.onChangeVoice} />
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
             <Btn label="Previous chapter" onClick={p.onPrevChapter}><IconChapPrev /></Btn>
@@ -177,6 +181,51 @@ function RateButton({ rate, onChange }: { rate: number; onChange: (r: number) =>
               }
             >
               {r}x
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VoiceButton({
+  voices, voiceId, onChange
+}: {
+  voices: { id: string; name: string; lang: string }[];
+  voiceId: string | null;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!voices.length) return null;
+  const current = voices.find((v) => v.id === voiceId);
+  const label = (current?.name ?? "Voice").replace(/^Microsoft |^Google /, "").split(" - ")[0];
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs text-muted hover:text-text px-2 py-1 rounded-md hover:bg-cardHover max-w-[7rem] truncate"
+        aria-label="Voice"
+        title={current?.name ?? "Choose a voice"}
+      >
+        {label}
+      </button>
+      {open && (
+        <div className="absolute bottom-9 left-0 z-10 rounded-lg shadow-card bg-elev py-1 min-w-[200px] max-h-64 overflow-y-auto">
+          {voices.map((v) => (
+            <button
+              key={v.id}
+              onClick={() => {
+                onChange(v.id);
+                setOpen(false);
+              }}
+              className={
+                "block w-full text-left px-3 py-1.5 text-sm truncate " +
+                (v.id === voiceId ? "text-accent" : "text-text hover:text-accent")
+              }
+            >
+              {v.name}
+              <span className="ml-1 text-[10px] text-subtle">{v.lang}</span>
             </button>
           ))}
         </div>

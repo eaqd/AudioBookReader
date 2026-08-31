@@ -27,6 +27,9 @@ export interface ExtractedTextItem {
   y: number;
   /** x-coordinate of the first glyph. Useful for column detection later. */
   x: number;
+  /** Advance width of this run in text space. Used to detect the gaps
+   *  where pdf.js dropped a space between adjacent style runs. */
+  width: number;
 }
 
 export interface ExtractedPage {
@@ -106,9 +109,10 @@ async function extractPage(pdf: PDFDocumentProxy, pageNumber: number): Promise<E
     const y = Array.isArray(t) ? t[5] : 0;
     // Font size ≈ |d| (vertical scale). Falls back to height if needed.
     const fontSize = Array.isArray(t) ? Math.abs(t[3]) : raw.height || 0;
-    items.push({ text: str, fontSize, y, x });
+    const width = typeof raw.width === "number" ? raw.width : 0;
+    items.push({ text: str, fontSize, y, x, width });
     if (raw.hasEOL) {
-      items.push({ text: "\n", fontSize, y, x });
+      items.push({ text: "\n", fontSize, y, x, width: 0 });
     }
   }
   return { pageNumber, items };

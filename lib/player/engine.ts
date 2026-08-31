@@ -1,25 +1,31 @@
 /**
- * Audiobook player engine.
+ * Audiobook player engine backed by the device speech synthesiser.
  *
- * Plays a flat stream of sentences as separate audio chunks, fetched from
- * IndexedDB or generated on demand via Kokoro. Maintains a small lookahead
- * (default 4) so generation runs while playback is happening, giving the
- * impression of gapless continuous reading.
+ * The previous implementation generated audio with Kokoro and played it
+ * through HTMLAudioElement. Measured in-browser, Kokoro ran 4.6x slower
+ * than realtime, so playback could never keep up with generation. Device
+ * voices speak immediately, which removes the audio cache, the lookahead
+ * queue and the 80MB model download entirely.
  *
- * Public surface is small and event-driven; callers (Reader UI) subscribe
- * to state changes rather than polling.
+ * The Web Speech API has no seekable timeline, so position and duration
+ * are estimated from how far through the sentence text the engine has
+ * reported, and seeking restarts the sentence from a character offset.
  */
 
-import { getAudio } from "@/lib/storage/audio";
-import { synthesize, type SynthProgress } from "@/lib/tts/kokoro";
-import { floatTo16BitWavBlob } from "@/lib/audio/wav";
+import {
+  listVoices,
+  pickDefaultVoice,
+  primeSpeech,
+  speak,
+  speechSupported,
+  startKeepAlive,
+  type SpeakHandle
+} from "@/lib/tts/speech";
 
 export interface SentenceRef {
-  /** Global index in the book (0..total-1). */
   globalIdx: number;
   chapterId: string;
   chapterIdx: number;
-  /** Index of this sentence within the chapter. */
   sentenceIdx: number;
   text: string;
 }
@@ -28,86 +34,86 @@ export interface EngineState {
   current: SentenceRef | null;
   playing: boolean;
   rate: number;
-  /** Current sentence playback position in seconds. */
+  /** Estimated position within the current sentence, in seconds. */
   positionSec: number;
-  /** Current sentence duration in seconds (0 if unknown). */
+  /** Estimated duration of the current sentence, in seconds. */
   durationSec: number;
-  /** True while a sentence is being synthesized in foreground. */
+  /** Retained for API compatibility; device speech never generates. */
   generating: boolean;
-  /** Sub-chunk progress when the foreground synth is running. */
-  synthProgress: SynthProgress | null;
-  /** Surfaced when synth fails (timeout, model error, etc). */
+  synthProgress: null;
   lastError: string | null;
+  /** Character offset reached in the current sentence. */
+  charIndex: number;
+  /** Index of the word currently being spoken, or -1. */
+  wordIdx: number;
 }
 
 export type EngineListener = (s: EngineState) => void;
 
 export interface EngineConfig {
   bookId: string;
-  voice: string;
-  /** How many sentences to keep prepared ahead of the current one. */
-  lookahead?: number;
+  voice: string | null;
 }
 
+/** Average characters spoken per second at rate 1.0. */
+const CHARS_PER_SEC = 14;
+
 export class PlayerEngine {
-  private cfg: Required<EngineConfig>;
   private sentences: SentenceRef[] = [];
   private currentIdx = 0;
   private rate = 1.0;
+  private voiceId: string | null;
   private listeners = new Set<EngineListener>();
 
-  /** Two audio elements for tight chunk transitions. */
-  private a: HTMLAudioElement;
-  private b: HTMLAudioElement;
-  private active: HTMLAudioElement;
-  private preload: HTMLAudioElement;
-  private preloadedFor: number | null = null;
-  private blobUrls = new Map<number, string>();
-
-  private rafId: number | null = null;
-  private generating = new Set<number>();
-  private foregroundSynth: { idx: number; progress: SynthProgress | null } | null = null;
+  private handle: SpeakHandle | null = null;
+  private playing = false;
+  private charIndex = 0;
+  private baseChar = 0;
   private lastError: string | null = null;
-  private unlocked = false;
-  private silentUrl: string | null = null;
+  private stopKeepAlive: (() => void) | null = null;
+  private tickId: number | null = null;
+  private startedAt = 0;
 
   constructor(config: EngineConfig) {
-    this.cfg = {
-      bookId: config.bookId,
-      voice: config.voice,
-      lookahead: config.lookahead ?? 4
-    };
     if (typeof window === "undefined") {
       throw new Error("PlayerEngine must be constructed in the browser.");
     }
-    this.a = new Audio();
-    this.b = new Audio();
-    [this.a, this.b].forEach((el) => {
-      el.preload = "auto";
-      el.crossOrigin = "anonymous";
-      // iOS: play inline; cast because TS lib still scopes this to HTMLVideoElement
-      (el as HTMLAudioElement & { playsInline?: boolean }).playsInline = true;
-    });
-    this.active = this.a;
-    this.preload = this.b;
-    this.bindEnded(this.a);
-    this.bindEnded(this.b);
+    this.voiceId = config.voice;
+    void this.ensureVoice();
   }
 
-  /* ------------------------- public API ------------------------- */
+  private async ensureVoice() {
+    if (this.voiceId) return;
+    const voices = await listVoices();
+    this.voiceId = pickDefaultVoice(voices);
+    this.emit();
+  }
 
   setSentences(sentences: SentenceRef[]) {
     this.sentences = sentences;
   }
 
-  setVoice(voice: string) {
-    this.cfg.voice = voice;
+  setVoice(voice: string | null) {
+    this.voiceId = voice;
+    if (this.playing) {
+      const resumeAt = this.charIndex;
+      this.stopSpeaking();
+      this.speakCurrent(resumeAt);
+    }
+    this.emit();
+  }
+
+  getVoice(): string | null {
+    return this.voiceId;
   }
 
   setRate(rate: number) {
     this.rate = rate;
-    this.a.playbackRate = rate;
-    this.b.playbackRate = rate;
+    if (this.playing) {
+      const resumeAt = this.charIndex;
+      this.stopSpeaking();
+      this.speakCurrent(resumeAt);
+    }
     this.emit();
   }
 
@@ -116,56 +122,25 @@ export class PlayerEngine {
   }
 
   isPlaying(): boolean {
-    return !this.active.paused && !this.active.ended;
+    return this.playing;
   }
 
   state(): EngineState {
+    const cur = this.sentences[this.currentIdx] ?? null;
+    const len = cur?.text.length ?? 0;
+    const perSec = CHARS_PER_SEC * this.rate;
     return {
-      current: this.sentences[this.currentIdx] ?? null,
-      playing: this.isPlaying(),
+      current: cur,
+      playing: this.playing,
       rate: this.rate,
-      positionSec: this.active.currentTime || 0,
-      durationSec: Number.isFinite(this.active.duration) ? this.active.duration : 0,
-      generating: this.generating.size > 0,
-      synthProgress: this.foregroundSynth?.progress ?? null,
-      lastError: this.lastError
+      positionSec: perSec > 0 ? this.charIndex / perSec : 0,
+      durationSec: perSec > 0 ? len / perSec : 0,
+      generating: false,
+      synthProgress: null,
+      lastError: this.lastError,
+      charIndex: this.charIndex,
+      wordIdx: cur ? wordIndexAtChar(cur.text, this.charIndex) : -1
     };
-  }
-
-  clearError() {
-    this.lastError = null;
-    this.emit();
-  }
-
-  /**
-   * iOS Safari blocks .play() unless it was initiated synchronously inside
-   * a user gesture. After awaiting model load + synthesis, the gesture has
-   * long expired. Workaround: as soon as the user taps Play (or a sentence),
-   * call this *synchronously* — it kicks both audio elements with a tiny
-   * silent WAV so they enter the "user-interacted" state and remain
-   * playable for the rest of the session, even after long awaits.
-   *
-   * Safe to call repeatedly; only the first call has any effect.
-   */
-  prime(): void {
-    if (this.unlocked) return;
-    this.unlocked = true;
-    if (!this.silentUrl) {
-      // 50ms of silence at 8kHz mono 16-bit. Browser can decode, iOS happy.
-      const samples = new Float32Array(400);
-      const blob = floatTo16BitWavBlob(samples, 8000);
-      this.silentUrl = URL.createObjectURL(blob);
-    }
-    for (const el of [this.a, this.b]) {
-      try {
-        el.src = this.silentUrl;
-        el.load();
-        const p = el.play();
-        if (p && typeof p.catch === "function") p.catch(() => {});
-      } catch {
-        /* fall through; we'll get a NotAllowedError later if needed */
-      }
-    }
   }
 
   subscribe(fn: EngineListener): () => void {
@@ -174,120 +149,98 @@ export class PlayerEngine {
     return () => this.listeners.delete(fn);
   }
 
-  /**
-   * Set the current sentence index. When `autoplay` is true (or when audio
-   * for this sentence is already cached) this also materializes the audio
-   * and starts playback. Otherwise it only updates state — no model load,
-   * no synthesis — so callers can position the reader on mount without
-   * triggering a speech-model fetch before the user has pressed Play.
-   */
+  clearError() {
+    this.lastError = null;
+    this.emit();
+  }
+
+  /** Must be called synchronously inside a user gesture (iOS unlock). */
+  prime(): void {
+    primeSpeech();
+  }
+
   async seekToSentence(globalIdx: number, autoplay = true): Promise<void> {
     const ref = this.sentences[globalIdx];
     if (!ref) return;
+    this.stopSpeaking();
     this.currentIdx = globalIdx;
-    this.preloadedFor = null;
-
-    if (!autoplay) {
-      // Lightweight position update only.
-      this.active.pause();
-      this.emit();
-      return;
-    }
-
-    const url = await this.ensureUrl(globalIdx);
-    this.swapTo(this.active, url);
-    this.active.playbackRate = this.rate;
-    this.active.currentTime = 0;
-    await this.waitMetadata(this.active);
+    this.charIndex = 0;
+    this.baseChar = 0;
+    if (autoplay) this.speakCurrent(0);
     this.emit();
-    void this.preloadAhead();
-    await this.play();
   }
 
-  /** Seek within the current sentence (in seconds). */
   seekWithinSentence(sec: number) {
-    const dur = Number.isFinite(this.active.duration) ? this.active.duration : 0;
-    this.active.currentTime = Math.max(0, Math.min(sec, dur));
+    const cur = this.sentences[this.currentIdx];
+    if (!cur) return;
+    const perSec = CHARS_PER_SEC * this.rate;
+    const target = Math.max(0, Math.min(cur.text.length, Math.round(sec * perSec)));
+    this.charIndex = target;
+    if (this.playing) {
+      this.stopSpeaking();
+      this.speakCurrent(target);
+    }
     this.emit();
   }
 
   async play(): Promise<void> {
-    try {
-      // First press after a positional seek: materialize audio for the
-      // current sentence now, then play it.
-      if (!this.active.src) {
-        const url = await this.ensureUrl(this.currentIdx);
-        this.swapTo(this.active, url);
-        this.active.playbackRate = this.rate;
-        await this.waitMetadata(this.active);
-      }
-      await this.active.play();
-      this.startTicker();
-      void this.preloadAhead();
+    if (!speechSupported()) {
+      this.lastError = "This browser does not support speech synthesis.";
       this.emit();
-    } catch (e) {
-      this.emit();
-      throw e;
+      return;
     }
-  }
-
-  pause() {
-    this.active.pause();
-    this.stopTicker();
+    if (this.playing) return;
+    this.speakCurrent(this.charIndex);
     this.emit();
   }
 
-  /** Skip by `delta` seconds, crossing chunk boundaries when needed. */
+  pause() {
+    this.stopSpeaking();
+    this.emit();
+  }
+
   async skipBySeconds(delta: number): Promise<void> {
-    const target = this.active.currentTime + delta;
-    if (target < 0) {
-      // hop into the previous sentence's tail
-      const prevIdx = this.currentIdx - 1;
-      if (prevIdx < 0) {
-        this.active.currentTime = 0;
-        this.emit();
-        return;
-      }
-      const prevDur = await this.ensureDuration(prevIdx);
-      const into = Math.max(0, prevDur + target);
-      await this.seekToSentence(prevIdx, this.isPlaying());
-      this.active.currentTime = into;
-      this.emit();
-      return;
-    }
-    const dur = Number.isFinite(this.active.duration) ? this.active.duration : 0;
-    if (target > dur) {
-      let overshoot = target - dur;
-      let idx = this.currentIdx + 1;
-      while (idx < this.sentences.length) {
-        const d = await this.ensureDuration(idx);
-        if (overshoot <= d) {
-          await this.seekToSentence(idx, this.isPlaying());
-          this.active.currentTime = overshoot;
-          this.emit();
-          return;
+    const perSec = CHARS_PER_SEC * this.rate;
+    let idx = this.currentIdx;
+    let pos = this.charIndex + Math.round(delta * perSec);
+
+    while (idx >= 0 && idx < this.sentences.length) {
+      const len = this.sentences[idx].text.length;
+      if (pos < 0) {
+        idx -= 1;
+        if (idx < 0) {
+          idx = 0;
+          pos = 0;
+          break;
         }
-        overshoot -= d;
+        pos += this.sentences[idx].text.length;
+      } else if (pos > len) {
+        pos -= len;
         idx += 1;
+        if (idx >= this.sentences.length) {
+          idx = this.sentences.length - 1;
+          pos = this.sentences[idx].text.length;
+          break;
+        }
+      } else {
+        break;
       }
-      // ran past the end
-      await this.seekToSentence(this.sentences.length - 1, false);
-      this.active.currentTime = this.active.duration || 0;
-      this.pause();
-      return;
     }
-    this.active.currentTime = target;
+    const wasPlaying = this.playing;
+    this.stopSpeaking();
+    this.currentIdx = Math.max(0, Math.min(idx, this.sentences.length - 1));
+    this.charIndex = Math.max(0, pos);
+    if (wasPlaying) this.speakCurrent(this.charIndex);
     this.emit();
   }
 
   prevSentence() {
-    if (this.currentIdx > 0) void this.seekToSentence(this.currentIdx - 1, this.isPlaying());
-    else this.active.currentTime = 0;
+    void this.seekToSentence(Math.max(0, this.currentIdx - 1), this.playing);
   }
 
   nextSentence() {
     if (this.currentIdx < this.sentences.length - 1) {
-      void this.seekToSentence(this.currentIdx + 1, this.isPlaying());
+      void this.seekToSentence(this.currentIdx + 1, this.playing);
     } else {
       this.pause();
     }
@@ -296,206 +249,110 @@ export class PlayerEngine {
   prevChapter() {
     const cur = this.sentences[this.currentIdx];
     if (!cur) return;
-    // start of current chapter, or previous chapter if already at the start
-    const sameStart = this.sentences.findIndex((s) => s.chapterId === cur.chapterId);
-    if (this.currentIdx > sameStart) {
-      void this.seekToSentence(sameStart, this.isPlaying());
+    const start = this.sentences.findIndex((s) => s.chapterId === cur.chapterId);
+    if (this.currentIdx > start) {
+      void this.seekToSentence(start, this.playing);
       return;
     }
-    // jump to chapter (chapterIdx - 1)
     const target = this.sentences.find((s) => s.chapterIdx === cur.chapterIdx - 1);
-    if (target) void this.seekToSentence(target.globalIdx, this.isPlaying());
+    if (target) void this.seekToSentence(target.globalIdx, this.playing);
   }
 
   nextChapter() {
     const cur = this.sentences[this.currentIdx];
     if (!cur) return;
     const target = this.sentences.find((s) => s.chapterIdx === cur.chapterIdx + 1);
-    if (target) void this.seekToSentence(target.globalIdx, this.isPlaying());
+    if (target) void this.seekToSentence(target.globalIdx, this.playing);
     else this.pause();
   }
 
   destroy() {
-    this.stopTicker();
-    [this.a, this.b].forEach((el) => {
-      el.pause();
-      el.src = "";
-      el.load();
-    });
-    for (const url of this.blobUrls.values()) URL.revokeObjectURL(url);
-    this.blobUrls.clear();
-    if (this.silentUrl) {
-      URL.revokeObjectURL(this.silentUrl);
-      this.silentUrl = null;
-    }
+    this.stopSpeaking();
     this.listeners.clear();
   }
 
-  /* ------------------------- internals ------------------------- */
+  private speakCurrent(fromChar: number) {
+    const cur = this.sentences[this.currentIdx];
+    if (!cur) return;
+    const text = cur.text.slice(fromChar);
+    if (!text.trim()) {
+      this.advance();
+      return;
+    }
+    this.baseChar = fromChar;
+    this.charIndex = fromChar;
+    this.playing = true;
+    this.startedAt = Date.now();
+    this.stopKeepAlive?.();
+    this.stopKeepAlive = startKeepAlive();
+    this.startTicker();
 
-  private bindEnded(el: HTMLAudioElement) {
-    el.addEventListener("ended", () => {
-      if (el !== this.active) return;
-      const nextIdx = this.currentIdx + 1;
-      if (nextIdx >= this.sentences.length) {
-        this.pause();
-        return;
-      }
-      // Use the preloaded element if we already have the next chunk loaded.
-      if (this.preloadedFor === nextIdx) {
-        const swap = this.preload;
-        this.preload = this.active;
-        this.active = swap;
-        this.currentIdx = nextIdx;
-        this.preloadedFor = null;
-        this.active.playbackRate = this.rate;
-        this.active.currentTime = 0;
-        void this.active.play().then(() => this.startTicker()).catch(() => {});
+    this.handle = speak(text, {
+      voiceId: this.voiceId,
+      rate: this.rate,
+      onBoundary: (ci) => {
+        this.charIndex = this.baseChar + ci;
         this.emit();
-        void this.preloadAhead();
-      } else {
-        void this.seekToSentence(nextIdx, true);
+      },
+      onEnd: () => {
+        this.handle = null;
+        this.advance();
+      },
+      onError: (msg) => {
+        this.handle = null;
+        this.lastError = msg;
+        this.playing = false;
+        this.stopTicker();
+        this.emit();
       }
     });
-    el.addEventListener("error", () => {
-      if (el === this.active) this.emit();
-    });
   }
 
-  private swapTo(el: HTMLAudioElement, url: string) {
-    if (el.src !== url) {
-      el.src = url;
-      el.load();
+  private advance() {
+    const next = this.currentIdx + 1;
+    if (next >= this.sentences.length) {
+      this.stopSpeaking();
+      this.emit();
+      return;
     }
-  }
-
-  private waitMetadata(el: HTMLAudioElement): Promise<void> {
-    if (el.readyState >= 1) return Promise.resolve();
-    return new Promise((resolve) => {
-      const fn = () => {
-        el.removeEventListener("loadedmetadata", fn);
-        resolve();
-      };
-      el.addEventListener("loadedmetadata", fn);
-    });
-  }
-
-  private async ensureUrl(idx: number): Promise<string> {
-    const cached = this.blobUrls.get(idx);
-    if (cached) return cached;
-    const ref = this.sentences[idx];
-    if (!ref) throw new Error(`No sentence at index ${idx}`);
-    const row =
-      (await getAudio(this.cfg.bookId, ref.chapterId, ref.sentenceIdx)) ??
-      (await this.generateAndCache(ref));
-    const url = URL.createObjectURL(row.blob);
-    this.blobUrls.set(idx, url);
-    this.maybeEvictUrls();
-    return url;
-  }
-
-  private async ensureDuration(idx: number): Promise<number> {
-    const ref = this.sentences[idx];
-    if (!ref) return 0;
-    const existing = await getAudio(this.cfg.bookId, ref.chapterId, ref.sentenceIdx);
-    if (existing) return existing.duration;
-    // Heuristic: 14 chars/sec at 1x for English speech.
-    return Math.max(1, ref.text.length / 14);
-  }
-
-  private async generateAndCache(ref: SentenceRef) {
-    if (this.generating.has(ref.globalIdx)) {
-      while (this.generating.has(ref.globalIdx)) {
-        await sleep(50);
-      }
-      const existing = await getAudio(this.cfg.bookId, ref.chapterId, ref.sentenceIdx);
-      if (existing) return existing;
-    }
-    this.generating.add(ref.globalIdx);
-    const isForeground = ref.globalIdx === this.currentIdx;
-    if (isForeground) this.foregroundSynth = { idx: ref.globalIdx, progress: null };
+    this.currentIdx = next;
+    this.charIndex = 0;
+    this.speakCurrent(0);
     this.emit();
-    try {
-      const row = await synthesize(
-        this.cfg.bookId,
-        ref.chapterId,
-        ref.sentenceIdx,
-        ref.text,
-        this.cfg.voice,
-        {
-          onProgress: (p) => {
-            if (isForeground) {
-              this.foregroundSynth = { idx: ref.globalIdx, progress: p };
-              this.emit();
-            }
-          }
-        }
-      );
-      this.lastError = null;
-      return row;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.lastError = msg;
-      throw e;
-    } finally {
-      this.generating.delete(ref.globalIdx);
-      if (isForeground) this.foregroundSynth = null;
-      this.emit();
-    }
   }
 
-  private async preloadAhead() {
-    // Always preload the next sentence into the inactive element if not yet.
-    const nextIdx = this.currentIdx + 1;
-    if (nextIdx < this.sentences.length && this.preloadedFor !== nextIdx) {
-      try {
-        const url = await this.ensureUrl(nextIdx);
-        this.swapTo(this.preload, url);
-        this.preload.playbackRate = this.rate;
-        this.preloadedFor = nextIdx;
-      } catch {
-        /* preload failure isn't fatal */
-      }
-    }
-    // Then warm up further sentences in the background.
-    const horizon = this.currentIdx + this.cfg.lookahead;
-    for (let i = this.currentIdx + 2; i <= horizon && i < this.sentences.length; i++) {
-      const ref = this.sentences[i];
-      const cached = await getAudio(this.cfg.bookId, ref.chapterId, ref.sentenceIdx);
-      if (!cached) {
-        scheduleIdle(() => {
-          void this.generateAndCache(ref);
-        });
-      }
-    }
+  private stopSpeaking() {
+    this.handle?.cancel();
+    this.handle = null;
+    this.playing = false;
+    this.stopKeepAlive?.();
+    this.stopKeepAlive = null;
+    this.stopTicker();
   }
 
-  private maybeEvictUrls() {
-    // Keep a small ring around the current sentence to bound memory.
-    const ringHalf = Math.max(this.cfg.lookahead, 2);
-    const lo = this.currentIdx - 2;
-    const hi = this.currentIdx + ringHalf;
-    for (const [idx, url] of this.blobUrls) {
-      if (idx < lo || idx > hi) {
-        URL.revokeObjectURL(url);
-        this.blobUrls.delete(idx);
-      }
-    }
-  }
-
+  /**
+   * Some engines emit no boundary events. Advance the estimate on a timer
+   * so the progress bar still moves; real boundary events override it.
+   */
   private startTicker() {
-    if (this.rafId != null) return;
-    const tick = () => {
-      this.rafId = requestAnimationFrame(tick);
-      this.emit();
-    };
-    this.rafId = requestAnimationFrame(tick);
+    if (this.tickId != null) return;
+    this.tickId = window.setInterval(() => {
+      if (!this.playing) return;
+      const cur = this.sentences[this.currentIdx];
+      if (!cur) return;
+      const elapsed = (Date.now() - this.startedAt) / 1000;
+      const estimate = this.baseChar + elapsed * CHARS_PER_SEC * this.rate;
+      if (estimate > this.charIndex) {
+        this.charIndex = Math.min(cur.text.length, Math.round(estimate));
+        this.emit();
+      }
+    }, 250);
   }
 
   private stopTicker() {
-    if (this.rafId != null) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
+    if (this.tickId != null) {
+      clearInterval(this.tickId);
+      this.tickId = null;
     }
   }
 
@@ -505,16 +362,15 @@ export class PlayerEngine {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise<void>((r) => setTimeout(r, ms));
-}
-
-function scheduleIdle(fn: () => void) {
-  type IdleCB = (cb: () => void, opts?: { timeout?: number }) => number;
-  const w = window as unknown as { requestIdleCallback?: IdleCB };
-  if (typeof w.requestIdleCallback === "function") {
-    w.requestIdleCallback(fn, { timeout: 5000 });
-  } else {
-    setTimeout(fn, 0);
+/** Which word contains charIndex, for highlighting. */
+export function wordIndexAtChar(text: string, charIndex: number): number {
+  if (charIndex <= 0) return 0;
+  let idx = -1;
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    idx += 1;
+    if (charIndex < m.index + m[0].length) return idx;
   }
+  return Math.max(0, idx);
 }

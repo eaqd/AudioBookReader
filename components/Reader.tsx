@@ -12,7 +12,7 @@ import {
   setMediaPlaybackState,
   setMediaPositionState
 } from "@/lib/player/mediaSession";
-import { loadKokoro, type ModelLoadProgress } from "@/lib/tts/kokoro";
+import { listVoices, speechSupported, type DeviceVoice } from "@/lib/tts/speech";
 import {
   loadProgress,
   saveProgressDebounced,
@@ -38,12 +38,8 @@ const ESTIMATED_CHARS_PER_SECOND = 14;
 export function Reader({ bookId }: ReaderProps) {
   const [loaded, setLoaded] = useState<LoadedBook | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [modelStatus, setModelStatus] = useState<
-    | { phase: "idle" }
-    | { phase: "loading"; progress: number; file?: string }
-    | { phase: "ready" }
-    | { phase: "error"; message: string }
-  >({ phase: "idle" });
+  const [voices, setVoices] = useState<DeviceVoice[]>([]);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const [engineState, setEngineState] = useState<EngineState | null>(null);
   const [tocOpen, setTocOpen] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -90,7 +86,13 @@ export function Reader({ bookId }: ReaderProps) {
     if (!loaded || engineRef.current) return;
     const eng = new PlayerEngine({
       bookId: loaded.book.id,
-      voice: loaded.book.voice
+      voice: (() => {
+        try {
+          return localStorage.getItem("abr.voice");
+        } catch {
+          return null;
+        }
+      })()
     });
     eng.setSentences(loaded.flat);
     engineRef.current = eng;
@@ -160,28 +162,28 @@ export function Reader({ bookId }: ReaderProps) {
     return () => clearInterval(id);
   }, [sleepRemainingMs]);
 
+  // Device voice list (async on most browsers).
+  useEffect(() => {
+    let alive = true;
+    void listVoices().then((v) => {
+      if (alive) setVoices(v);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   /* -------- callbacks -------- */
 
+  // Device speech needs no download; just confirm the API exists.
   const ensureModelLoaded = useCallback(async () => {
-    if (modelStatus.phase === "ready") return true;
-    setModelStatus({ phase: "loading", progress: 0 });
-    try {
-      await loadKokoro({
-        onProgress: (p: ModelLoadProgress) => {
-          setModelStatus({
-            phase: "loading",
-            progress: p.fraction,
-            file: p.file
-          });
-        }
-      });
-      setModelStatus({ phase: "ready" });
-      return true;
-    } catch (e) {
-      setModelStatus({ phase: "error", message: (e as Error).message });
+    if (!speechSupported()) {
+      setSpeechError("This browser has no speech synthesis. Try Safari or Chrome.");
       return false;
     }
-  }, [modelStatus.phase]);
+    setSpeechError(null);
+    return true;
+  }, []);
 
   const togglePlay = useCallback(async () => {
     const eng = engineRef.current;
@@ -198,7 +200,7 @@ export function Reader({ bookId }: ReaderProps) {
     try {
       await eng.play();
     } catch (e) {
-      setModelStatus({ phase: "error", message: (e as Error).message });
+      setSpeechError((e as Error).message);
     }
   }, [ensureModelLoaded]);
 
@@ -316,7 +318,11 @@ export function Reader({ bookId }: ReaderProps) {
         </button>
       </header>
 
-      <ModelStatus status={modelStatus} onRetry={ensureModelLoaded} />
+      {speechError && (
+        <div className="mx-4 sm:mx-6 mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {speechError}
+        </div>
+      )}
 
       <TextPane
         chapters={loaded.content.chapters}
@@ -351,6 +357,16 @@ export function Reader({ bookId }: ReaderProps) {
         onOpenToc={() => setTocOpen(true)}
         onSleep={onSleep}
         sleepRemainingMs={sleepRemainingMs}
+        voices={voices}
+        voiceId={engineState ? engineRef.current?.getVoice() ?? null : null}
+        onChangeVoice={(id) => {
+          engineRef.current?.setVoice(id);
+          try {
+            localStorage.setItem("abr.voice", id);
+          } catch {
+            /* private mode */
+          }
+        }}
         synthProgress={engineState.synthProgress}
         lastError={engineState.lastError}
         onClearError={() => engineRef.current?.clearError()}
@@ -442,49 +458,3 @@ function FullScreenLoading({ message }: { message: string }) {
   );
 }
 
-function ModelStatus({
-  status, onRetry
-}: {
-  status:
-    | { phase: "idle" }
-    | { phase: "loading"; progress: number; file?: string }
-    | { phase: "ready" }
-    | { phase: "error"; message: string };
-  onRetry: () => void;
-}) {
-  if (status.phase === "idle" || status.phase === "ready") return null;
-  if (status.phase === "error") {
-    return (
-      <div className="mx-4 sm:mx-6 mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-        <p>Couldn&rsquo;t load the speech model.</p>
-        <p className="mt-1 text-xs text-red-300/90">{status.message}</p>
-        <button
-          onClick={onRetry}
-          className="mt-2 inline-flex items-center gap-2 rounded-md bg-red-500/20 hover:bg-red-500/30 px-3 py-1.5 text-xs text-red-100"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-  const pct = Math.round(status.progress * 100);
-  return (
-    <div className="mx-4 sm:mx-6 mt-2 rounded-md bg-card px-4 py-3 text-sm">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-text">Setting up your reader (one-time, ~80MB)</span>
-        <span className="text-xs text-muted tabular-nums">{pct}%</span>
-      </div>
-      <div className="mt-2 h-1.5 rounded-full bg-line overflow-hidden">
-        <div
-          className="h-full bg-accent transition-[width] duration-200"
-          style={{ width: `${Math.max(2, pct)}%` }}
-        />
-      </div>
-      <p className="mt-1 text-[11px] text-subtle truncate">
-        {status.file
-          ? status.file
-          : "Downloading the voice — please keep the page open. Wi-Fi is much faster than cellular."}
-      </p>
-    </div>
-  );
-}
