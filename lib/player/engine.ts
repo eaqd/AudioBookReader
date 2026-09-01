@@ -57,6 +57,8 @@ export interface EngineConfig {
 
 /** Average characters spoken per second at rate 1.0. */
 const CHARS_PER_SEC = 14;
+/** How far interpolation may run past the last confirmed boundary. */
+const MAX_DRIFT_CHARS = 90;
 
 export class PlayerEngine {
   private sentences: SentenceRef[] = [];
@@ -77,6 +79,9 @@ export class PlayerEngine {
   /** Set once a real boundary event arrives; the timer estimate then
    *  stops competing with it. */
   private sawBoundary = false;
+  /** Last position the speech engine actually reported, and when. */
+  private anchorChar = 0;
+  private anchorAt = 0;
   private startedAt = 0;
 
   constructor(config: EngineConfig) {
@@ -309,6 +314,8 @@ export class PlayerEngine {
     this.stopKeepAlive?.();
     this.stopKeepAlive = startKeepAlive();
     this.lastProgressAt = Date.now();
+    this.anchorChar = this.baseChar;
+    this.anchorAt = Date.now();
     this.startTicker();
     this.startWatchdog();
 
@@ -316,9 +323,18 @@ export class PlayerEngine {
       voiceId: this.voiceId,
       rate: this.rate,
       onBoundary: (ci) => {
+        const reported = this.baseChar + ci;
         this.sawBoundary = true;
-        this.charIndex = this.baseChar + ci;
-        this.lastProgressAt = Date.now();
+        // Re-anchor timing to the truth the engine just gave us.
+        this.anchorChar = reported;
+        this.anchorAt = Date.now();
+        this.lastProgressAt = this.anchorAt;
+        // Only ever move forward. If interpolation has run slightly ahead
+        // of the engine, holding position is invisible; snapping back is
+        // a visible stutter and reads as words highlighting out of order.
+        if (reported > this.charIndex) {
+          this.charIndex = reported;
+        }
         this.emit();
       },
       onEnd: () => {
@@ -401,17 +417,31 @@ export class PlayerEngine {
     if (this.tickId != null) return;
     this.tickId = window.setInterval(() => {
       if (!this.playing) return;
-      // Real boundary events win; never second-guess them.
-      if (this.sawBoundary) return;
       const cur = this.sentences[this.currentIdx];
       if (!cur) return;
-      const elapsed = (Date.now() - this.startedAt) / 1000;
-      const estimate = this.baseChar + elapsed * CHARS_PER_SEC * this.rate;
+
+      // Boundary events are the truth, but most voices fire them far
+      // apart - iOS often reports only every several words, and some
+      // report once per utterance. Freezing the cursor between them is
+      // what made the highlight sit still and then leap forward. So we
+      // interpolate from the last real anchor and let the next boundary
+      // correct us.
+      const since = (Date.now() - this.anchorAt) / 1000;
+      let estimate = this.anchorChar + since * CHARS_PER_SEC * this.rate;
+
+      // Never run more than a few words past the last confirmed position:
+      // if boundaries stop arriving, drifting to the end of the sentence
+      // would be worse than waiting.
+      const ceiling = this.sawBoundary
+        ? this.anchorChar + MAX_DRIFT_CHARS
+        : Number.POSITIVE_INFINITY;
+      estimate = Math.min(estimate, ceiling, cur.text.length);
+
       if (estimate > this.charIndex) {
-        this.charIndex = Math.min(cur.text.length, Math.round(estimate));
+        this.charIndex = Math.round(estimate);
         this.emit();
       }
-    }, 250);
+    }, 120);
   }
 
   private stopTicker() {

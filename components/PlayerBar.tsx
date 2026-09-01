@@ -70,29 +70,41 @@ export function PlayerBar(p: PlayerBarProps) {
           onSeek={p.onSeekWithinSentence}
         />
 
-        <div className="flex items-center justify-between mt-3">
-          <div className="flex items-center gap-2">
+        {/* Transport. Centred and generously spaced: these are the
+            controls reached while walking, so they get the room. */}
+        <div className="flex items-center justify-center gap-1.5 sm:gap-3 mt-3">
+          <Btn label="Previous chapter" onClick={p.onPrevChapter}><IconChapPrev /></Btn>
+          <Btn label="Previous sentence" onClick={p.onPrevSentence} mute><IconStepBack /></Btn>
+          <Btn label="Back 15s" onClick={p.onBack15}><Tag>15</Tag><IconBack15 /></Btn>
+          <button
+            aria-label={p.playing ? "Pause" : "Play"}
+            onClick={p.onPlayPause}
+            className="h-14 w-14 mx-1 rounded-full grid place-items-center bg-text text-black hover:scale-105 active:scale-95 transition"
+          >
+            {p.playing ? <IconPause /> : <IconPlay />}
+          </button>
+          <Btn label="Forward 15s" onClick={p.onFwd15}><IconFwd15 /><Tag>15</Tag></Btn>
+          <Btn label="Next sentence" onClick={p.onNextSentence} mute><IconStepFwd /></Btn>
+          <Btn label="Next chapter" onClick={p.onNextChapter}><IconChapNext /></Btn>
+        </div>
+
+        {/* Settings row. Chapters gets a visible label so it is an
+            obvious target rather than an easily-missed glyph. */}
+        <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-line/60">
+          <div className="flex items-center gap-1">
             <RateButton rate={p.rate} onChange={p.onChangeRate} />
             <VoiceButton voices={p.voices} voiceId={p.voiceId} onChange={p.onChangeVoice} />
           </div>
-          <div className="flex items-center gap-2 sm:gap-3">
-            <Btn label="Previous chapter" onClick={p.onPrevChapter}><IconChapPrev /></Btn>
-            <Btn label="Previous sentence" onClick={p.onPrevSentence} mute><IconStepBack /></Btn>
-            <Btn label="Back 15s" onClick={p.onBack15}><Tag>15</Tag><IconBack15 /></Btn>
-            <button
-              aria-label={p.playing ? "Pause" : "Play"}
-              onClick={p.onPlayPause}
-              className="h-12 w-12 rounded-full grid place-items-center bg-text text-black hover:scale-105 transition"
-            >
-              {p.playing ? <IconPause /> : <IconPlay />}
-            </button>
-            <Btn label="Forward 15s" onClick={p.onFwd15}><IconFwd15 /><Tag>15</Tag></Btn>
-            <Btn label="Next sentence" onClick={p.onNextSentence} mute><IconStepFwd /></Btn>
-            <Btn label="Next chapter" onClick={p.onNextChapter}><IconChapNext /></Btn>
-          </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <SleepBtn onSelect={p.onSleep} remaining={p.sleepRemainingMs} />
-            <Btn label="Chapters" onClick={p.onOpenToc}><IconToc /></Btn>
+            <button
+              onClick={p.onOpenToc}
+              aria-label="Chapters"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-muted hover:text-text hover:bg-cardHover active:bg-cardHover"
+            >
+              <IconToc />
+              <span>Chapters</span>
+            </button>
           </div>
         </div>
       </div>
