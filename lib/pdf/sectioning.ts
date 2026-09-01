@@ -62,7 +62,7 @@ export function buildChapters(doc: ExtractedDoc): BookContent {
  * lay out text item-by-item; we coalesce items at similar y-coordinates
  * and split on visible vertical gaps.
  */
-function pagesToParagraphs(doc: ExtractedDoc): Paragraph[] {
+export function pagesToParagraphs(doc: ExtractedDoc): Paragraph[] {
   const paragraphs: Paragraph[] = [];
   for (const page of doc.pages) {
     const lines = groupItemsIntoLines(page.items);
@@ -86,10 +86,18 @@ function pagesToParagraphs(doc: ExtractedDoc): Paragraph[] {
       // runs inside a paragraph; splitting on those chopped sentences in
       // half and — once buildChapter began appending terminators — put a
       // period in the middle of a sentence.
+      // A size change in either direction ends the block: a heading is a
+      // size outlier, and dropping back to body size means the heading is
+      // over. Only checking for an increase let headings swallow the whole
+      // chapter beneath them.
+      //
+      // This is safe now because line size comes from dominantFontSize, so
+      // a bold or italic run inside a paragraph no longer registers as a
+      // size change and cannot split a sentence.
       const prevFont = buf?.fontSize ?? 0;
-      const fontJump = prevFont > 0 ? lineFont - prevFont : 0;
-      const headingLike = fontJump > Math.max(1.5, prevFont * 0.15);
-      const newParagraph = !buf || verticalGap > lineHeight * 1.6 || headingLike;
+      const fontDelta = prevFont > 0 ? Math.abs(lineFont - prevFont) : 0;
+      const sizeChanged = fontDelta > Math.max(1, prevFont * 0.08);
+      const newParagraph = !buf || verticalGap > lineHeight * 1.6 || sizeChanged;
       if (newParagraph) {
         if (buf) {
           paragraphs.push({ page: page.pageNumber, text: buf.text, fontSize: buf.fontSize });
@@ -97,13 +105,43 @@ function pagesToParagraphs(doc: ExtractedDoc): Paragraph[] {
         buf = { text, fontSize: lineFont };
       } else {
         buf!.text = joinWrappedLines(buf!.text, text);
-        buf!.fontSize = Math.max(buf!.fontSize, lineFont);
       }
       prevY = line.y;
     }
     if (buf) paragraphs.push({ page: page.pageNumber, text: buf.text, fontSize: buf.fontSize });
   }
-  return dropChrome(paragraphs);
+  return dropChrome(mergeDropCaps(paragraphs));
+}
+
+/**
+ * Reattach decorative drop caps.
+ *
+ * Trade books set the first letter of a chapter as a large ornamental
+ * glyph, which pdf.js reports as its own text run at its own size. Left
+ * alone it becomes a one-letter "paragraph" that looks like a heading,
+ * so the chapter opener "When I was twenty-six" arrives as a bogus
+ * chapter titled "W" followed by a body starting "hen I was twenty-six" -
+ * wrong on the page and wrong when read aloud.
+ *
+ * A paragraph beginning with a lowercase letter is the tell: real
+ * paragraphs do not. When we see one, we look back a few blocks for a
+ * lone capital and glue it on.
+ */
+function mergeDropCaps(paragraphs: Paragraph[]): Paragraph[] {
+  const dropped = new Set<number>();
+  for (let i = 0; i < paragraphs.length; i++) {
+    const text = paragraphs[i].text.trim();
+    if (!/^[a-z]/.test(text)) continue;
+    for (let j = i - 1; j >= 0 && j >= i - 3; j--) {
+      if (dropped.has(j)) continue;
+      const cap = paragraphs[j].text.trim();
+      if (!/^[A-Z]$/.test(cap)) continue;
+      paragraphs[i] = { ...paragraphs[i], text: cap + text };
+      dropped.add(j);
+      break;
+    }
+  }
+  return paragraphs.filter((_, i) => !dropped.has(i));
 }
 
 /**
@@ -116,11 +154,26 @@ function pagesToParagraphs(doc: ExtractedDoc): Paragraph[] {
  * "well- known" is audibly wrong.
  */
 function joinWrappedLines(prev: string, next: string): string {
-  if (/[A-Za-z]-$/.test(prev) && /^[a-z]/.test(next)) {
-    return prev.slice(0, -1) + next;
+  if (/[A-Za-z]-$/.test(prev)) {
+    const nextWord = next.match(/^[A-Za-z]+/)?.[0] ?? "";
+    // A suspended hyphen is real punctuation, not a line break:
+    // "third- or fourth-level", "Democrat- and Republican-led". The
+    // giveaway is the conjunction that follows, so leave those alone.
+    if (!SUSPENDED_HYPHEN_FOLLOWERS.has(nextWord.toLowerCase())) {
+      // Typeset hyphenation splits a word mid-way, so the hyphen goes:
+      // "un-" + "certain" is "uncertain". A capitalised continuation
+      // means it was a real compound broken across lines, so the hyphen
+      // stays: "Merriam-" + "Webster" is "Merriam-Webster".
+      return /^[A-Z]/.test(next) ? prev + next : prev.slice(0, -1) + next;
+    }
   }
   return `${prev} ${next}`;
 }
+
+/** Words that legitimately follow a dangling hyphen in English. */
+const SUSPENDED_HYPHEN_FOLLOWERS = new Set([
+  "or", "and", "nor", "but", "to", "through", "versus", "vs"
+]);
 
 interface Line {
   y: number;
@@ -258,12 +311,23 @@ function sectionsFromOutline(
 
 /* --- tier 2: heading heuristic --------------------------------------- */
 
-function sectionsFromHeadings(paragraphs: Paragraph[]): Chapter[] | null {
-  if (paragraphs.length < 10) return null;
-  const sizes = paragraphs.map((p) => p.fontSize).filter((s) => s > 0).sort((a, b) => a - b);
-  if (sizes.length < 10) return null;
-  const median = sizes[Math.floor(sizes.length / 2)];
-  const threshold = median * 1.3;
+export function sectionsFromHeadings(paragraphs: Paragraph[]): Chapter[] | null {
+  if (paragraphs.length < 4) return null;
+
+  // Weight the median by how much text each block carries, so "typical
+  // size" means body-text size. An unweighted median counts a one-word
+  // heading the same as a 400-word paragraph, which on a book with many
+  // headings dragged the median up until no heading could clear the bar.
+  const weighted: number[] = [];
+  for (const p of paragraphs) {
+    if (p.fontSize <= 0) continue;
+    const weight = Math.max(1, Math.round(p.text.length / 20));
+    for (let i = 0; i < weight; i++) weighted.push(p.fontSize);
+  }
+  if (weighted.length < 4) return null;
+  weighted.sort((a, b) => a - b);
+  const median = weighted[Math.floor(weighted.length / 2)];
+  const threshold = median * 1.25;
 
   const headingIdx: number[] = [];
   for (let i = 0; i < paragraphs.length; i++) {

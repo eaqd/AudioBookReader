@@ -36,3 +36,7 @@ public/icons/
 public/sw.js
 public/sw.js.map
 public/swe-worker-*.js
+
+# local test books (never commit copyrighted material)
+*.pdf
+!tests/**/*.mjs

@@ -126,7 +126,7 @@ export function Reader({ bookId }: ReaderProps) {
         ? loaded.flat.findIndex(
             (sr) => sr.chapterId === p.chapterId && sr.sentenceIdx === p.sentenceIdx
           )
-        : 0;
+        : firstContentSentenceIdx(loaded);
       const idx = startIdx >= 0 ? startIdx : 0;
       // We can't autoplay before user gesture; just position the engine.
       await eng.seekToSentence(idx, false);
@@ -435,6 +435,52 @@ export function Reader({ bookId }: ReaderProps) {
 }
 
 /* ------------------------- helpers ------------------------- */
+
+/**
+ * Where a book should open when it has never been read.
+ *
+ * Trade PDFs begin with title pages, copyright blocks, dedications and a
+ * table of contents. Landing on "OceanofPDF.com" is a poor first
+ * impression, so skip ahead to the first chapter carrying real prose.
+ * Anything with only a handful of sentences is front matter; if the whole
+ * book looks like that we fall back to the start rather than skipping
+ * something real.
+ */
+function firstContentSentenceIdx(loaded: LoadedBook): number {
+  const MIN_SENTENCES = 5;
+  const chapters = loaded.content.chapters;
+
+  const at = (i: number) =>
+    loaded.flat.find((s) => s.chapterIdx === i && s.sentenceIdx === 0)?.globalIdx ?? -1;
+
+  // Best case: the book names where it begins.
+  for (let i = 0; i < chapters.length; i++) {
+    const c = chapters[i];
+    if (c.sentences.length >= MIN_SENTENCES && CONTENT_START.test(c.title.trim())) {
+      const idx = at(i);
+      if (idx >= 0) return idx;
+    }
+  }
+  // Otherwise the first substantial chapter that is not obviously
+  // front matter. Length alone is not enough: a copyright page runs to
+  // eighteen sentences of legal boilerplate.
+  for (let i = 0; i < chapters.length; i++) {
+    const c = chapters[i];
+    if (c.sentences.length >= MIN_SENTENCES && !FRONT_MATTER.test(c.title.trim())) {
+      const idx = at(i);
+      if (idx >= 0) return idx;
+    }
+  }
+  return 0;
+}
+
+/** Titles that mark the real beginning of a book. */
+const CONTENT_START =
+  /^(introduction|prologue|preface|foreword|chapter\s+\w+|part\s+\w+|one\b)/i;
+
+/** Titles that are front or back matter, never where to start reading. */
+const FRONT_MATTER =
+  /^(title\s*page|copyright|dedication|contents|table\s+of\s+contents|also\s+by|praise\s+for|epigraph|about\s+the\s+author|index|notes|acknowledg|bibliograph|colophon|imprint)/i;
 
 function flattenSentences(chapters: ChapterPayload[]): SentenceRef[] {
   const out: SentenceRef[] = [];
