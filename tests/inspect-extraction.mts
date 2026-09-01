@@ -41,7 +41,20 @@ for (const it of pages[2].items.slice(0, 8)) {
   console.log(`   size=${it.fontSize.toFixed(1).padStart(5)} y=${it.y.toFixed(0).padStart(4)} "${it.text.slice(0, 58)}"`);
 }
 
-const book = buildChapters({ title: "The Long Quiet", pageCount: doc.numPages, pages, outline: null } as never);
+const rawOutline = await doc.getOutline().catch(() => null);
+const outline: { title: string; pageNumber: number }[] = [];
+if (rawOutline) {
+  for (const node of rawOutline) {
+    try {
+      const dest = typeof node.dest === 'string' ? await doc.getDestination(node.dest) : node.dest;
+      if (Array.isArray(dest) && dest[0]) {
+        const pi = await doc.getPageIndex(dest[0] as never);
+        outline.push({ title: (node.title || '').trim(), pageNumber: pi + 1 });
+      }
+    } catch {}
+  }
+}
+const book = buildChapters({ title: "The Long Quiet", pageCount: doc.numPages, pages, outline: outline.length ? outline : null } as never);
 
 console.log(`\n=== RESULT ===`);
 console.log(`detectionMode : ${book.detectionMode}`);

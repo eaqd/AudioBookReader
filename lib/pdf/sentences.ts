@@ -11,6 +11,8 @@
  *      that break TTS pacing and hang the synthesizer.
  */
 
+import { repairExtractedText } from "./repair";
+
 const MAX_SENTENCE_CHARS = 350;
 
 const ABBREVIATIONS = new Set([
@@ -25,7 +27,7 @@ const CODE_FENCE = /```[\s\S]*?```/g;
 const HEAVY_PUNCT = /[│┃┄┈─━┆┇┊┋╌╍═║]+/g;
 
 export function cleanForSpeech(s: string): string {
-  return s
+  return repairExtractedText(s)
     .replace(CODE_FENCE, " ")
     .replace(LATEX_BLOCK, " ")
     .replace(LATEX_INLINE, " ")

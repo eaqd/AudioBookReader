@@ -310,7 +310,7 @@ export function Reader({ bookId }: ReaderProps) {
   return (
     <div className="flex flex-col h-screen safe-top">
       <header className="px-4 sm:px-6 pt-4 pb-2 flex items-center gap-3">
-        <Link href="/" className="text-sm text-muted hover:text-text shrink-0">
+        <Link href="/" className="tap text-sm text-muted hover:text-text shrink-0 -ml-2">
           ← Library
         </Link>
         <div className="flex-1 min-w-0 flex items-center gap-3 justify-center">
@@ -325,21 +325,21 @@ export function Reader({ bookId }: ReaderProps) {
         <button
           onClick={() => setFontScale((f) => (f >= 1.35 ? 0.9 : +(f + 0.15).toFixed(2)))}
           aria-label="Text size"
-          className="shrink-0 text-xs px-2 py-1 rounded-md bg-cardHover text-muted hover:text-text"
+          className="tap shrink-0 text-xs px-2 rounded-md bg-cardHover text-muted hover:text-text"
         >
           A{fontScale >= 1.2 ? "+" : fontScale <= 0.95 ? "-" : ""}
         </button>
         <button
           onClick={() => setLocked(true)}
           aria-label="Lock screen"
-          className="shrink-0 text-xs px-2 py-1 rounded-md bg-cardHover text-muted hover:text-text"
+          className="tap shrink-0 text-xs px-2 rounded-md bg-cardHover text-muted hover:text-text"
         >
           Lock
         </button>
         <button
           onClick={() => setFollow((v) => !v)}
           className={
-            "shrink-0 text-xs px-2 py-1 rounded-md " +
+            "tap shrink-0 text-xs px-2 rounded-md " +
             (follow ? "bg-accent text-black" : "bg-cardHover text-muted hover:text-text")
           }
         >

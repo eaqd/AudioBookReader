@@ -82,20 +82,59 @@ body {
   html { scroll-behavior: auto; }
 }
 
+/* ---------------------------------------------------------------
+   Touch targets
+
+   Apple's guidance is a 44x44pt minimum, and it is the right number for
+   a player used one-handed while walking. Icons stay visually small;
+   the *hit area* is what grows, via min sizes and centred content.
+   --------------------------------------------------------------- */
+.tap {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The scrubber was a 4px-tall drag target - effectively unusable on a
+   phone. The input now owns 44px of height for the finger while the
+   painted track stays thin. */
 input[type="range"].scrubber {
   -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  height: 4px;
-  background: rgba(127, 127, 127, 0.3);
-  border-radius: 999px;
+  height: 44px;
+  background: transparent;
   outline: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+input[type="range"].scrubber::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.35);
 }
 input[type="range"].scrubber::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 16px; height: 16px;
+  width: 18px;
+  height: 18px;
+  margin-top: -6.5px;
   border-radius: 999px;
   background: #1DB954;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+input[type="range"].scrubber::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.35);
+}
+input[type="range"].scrubber::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 999px;
+  background: #1DB954;
 }

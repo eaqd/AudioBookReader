@@ -16,7 +16,20 @@ for (let p = 1; p <= doc.numPages; p++) {
   }
   pages.push({ pageNumber: p, items });
 }
-const book = buildChapters({ title: "Thinking in Bets", pageCount: doc.numPages, pages, outline: null } as any);
+const rawOutline = await doc.getOutline().catch(() => null);
+const outline: { title: string; pageNumber: number }[] = [];
+if (rawOutline) {
+  for (const node of rawOutline) {
+    try {
+      const dest = typeof node.dest === 'string' ? await doc.getDestination(node.dest) : node.dest;
+      if (Array.isArray(dest) && dest[0]) {
+        const pi = await doc.getPageIndex(dest[0] as never);
+        outline.push({ title: (node.title || '').trim(), pageNumber: pi + 1 });
+      }
+    } catch {}
+  }
+}
+const book = buildChapters({ title: "Thinking in Bets", pageCount: doc.numPages, pages, outline: outline.length ? outline : null } as never);
 const sentences = book.chapters.flatMap(c => c.sentences);
 const all = sentences.join(" ");
 

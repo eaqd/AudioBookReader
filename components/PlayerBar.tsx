@@ -79,7 +79,7 @@ export function PlayerBar(p: PlayerBarProps) {
           <button
             aria-label={p.playing ? "Pause" : "Play"}
             onClick={p.onPlayPause}
-            className="h-14 w-14 mx-1 rounded-full grid place-items-center bg-text text-black hover:scale-105 active:scale-95 transition"
+            className="h-16 w-16 mx-1 shrink-0 rounded-full grid place-items-center bg-text text-black hover:scale-105 active:scale-95 transition"
           >
             {p.playing ? <IconPause /> : <IconPlay />}
           </button>
@@ -100,7 +100,7 @@ export function PlayerBar(p: PlayerBarProps) {
             <button
               onClick={p.onOpenToc}
               aria-label="Chapters"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-muted hover:text-text hover:bg-cardHover active:bg-cardHover"
+              className="tap gap-1.5 px-3 rounded-md text-xs text-muted hover:text-text hover:bg-cardHover active:bg-cardHover"
             >
               <IconToc />
               <span>Chapters</span>
@@ -155,7 +155,7 @@ function Btn({
       onClick={onClick}
       aria-label={label}
       className={
-        "inline-flex items-center gap-1 px-2 py-1.5 rounded-md transition " +
+        "tap gap-1 px-2 rounded-md transition active:bg-cardHover " +
         (mute ? "text-muted hover:text-text" : "text-text hover:text-accent")
       }
     >
@@ -174,7 +174,7 @@ function RateButton({ rate, onChange }: { rate: number; onChange: (r: number) =>
     <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="text-sm tabular-nums text-muted hover:text-text px-2 py-1 rounded-md hover:bg-cardHover"
+        className="tap text-sm tabular-nums text-muted hover:text-text px-2 rounded-md hover:bg-cardHover active:bg-cardHover"
       >
         {rate.toFixed(2)}x
       </button>
@@ -188,7 +188,7 @@ function RateButton({ rate, onChange }: { rate: number; onChange: (r: number) =>
                 setOpen(false);
               }}
               className={
-                "block w-full text-left px-3 py-1.5 text-sm " +
+                "block w-full text-left px-4 py-3 text-sm " +
                 (r === rate ? "text-accent" : "text-text hover:text-accent")
               }
             >
@@ -216,7 +216,7 @@ function VoiceButton({
     <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="text-xs text-muted hover:text-text px-2 py-1 rounded-md hover:bg-cardHover max-w-[7rem] truncate"
+        className="tap text-xs text-muted hover:text-text px-2 rounded-md hover:bg-cardHover active:bg-cardHover max-w-[7.5rem]"
         aria-label="Voice"
         title={current?.name ?? "Choose a voice"}
       >
@@ -257,7 +257,7 @@ function SleepBtn(props: {
       <button
         onClick={() => setOpen((v) => !v)}
         aria-label="Sleep timer"
-        className="text-xs text-muted hover:text-text px-2 py-1.5 rounded-md hover:bg-cardHover"
+        className="tap text-xs text-muted hover:text-text px-2 rounded-md hover:bg-cardHover active:bg-cardHover"
       >
         💤 {label ?? ""}
       </button>
